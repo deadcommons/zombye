@@ -655,3 +655,30 @@ fn hotwiring_gets_likelier_with_mechanics() {
     assert_eq!(vehicle_of_container(crate::corpses::corpse_container(7)), None);
     assert_eq!(vehicle_of_container(12), None);
 }
+
+/// #67: a car driven into another at speed, head on, from the side, at an angle and offset, never
+/// leaves either car, the driver or anything near with a position, heading or speed that isn't a
+/// number (a NaN there turned everything lit round the crash black on screen).
+#[test]
+fn a_car_driven_into_another_stays_finite() {
+    for (k, (heading, offset)) in [(0.0, 0.0), (0.5, 0.3), (std::f32::consts::FRAC_PI_2, 0.0), (std::f32::consts::PI, 0.9), (2.5, -0.6)].into_iter().enumerate() {
+        let (mut w, id, vid) = field();
+        let other = park(&mut w, if k % 2 == 0 { "car" } else { "van" }, Vec2::new(125.0, 100.0 + offset), heading);
+        w.player_vehicle(id, VehicleOp::Enter { vehicle: Some(vid) }).unwrap();
+        for step in 0..(8.0 / crate::TICK_DT) as u32 {
+            let steer = if step > 60 { ((step as f32) * 0.37).sin() } else { 0.0 };
+            w.player_drive(id, DriveInput { throttle: 1.0, steer, brake: false });
+            w.step();
+            for v in &w.vehicles.list {
+                let s = v.state;
+                assert!(s.pos.is_finite() && s.heading.is_finite() && s.speed.is_finite() && s.steer.is_finite(), "case {k} tick {step}: {s:?}");
+                assert!(v.cond.parts.iter().all(|p| p.is_finite()) && v.cond.fuel.is_finite(), "case {k}: {:?}", v.cond);
+            }
+            for p in &w.players {
+                assert!(p.state.pos.is_finite() && p.hp.is_finite(), "case {k}: player at {:?}", p.state.pos);
+            }
+        }
+        let hit = car(&w, other);
+        assert!(hit.pos.is_finite(), "case {k}");
+    }
+}

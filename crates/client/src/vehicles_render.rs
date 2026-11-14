@@ -12,6 +12,12 @@
 //! pitch back as it speeds up and forward as it brakes), and a running car has headlights and tail
 //! lights ([`car_lights`], the nearest [`MAX_CAR_LIGHTS`]), whose beams show what they light
 //! through the fog of war as other lights do. Client only: nothing here is in the sim.
+//!
+//! Cars in parts (#66): a model whose wheels, steering wheel and glass are nodes of their own
+//! (`furniture_models::PartKind`, the release models' cars) is drawn as its body with each part a
+//! child of it: the wheels roll by the distance driven, the front ones and the steering wheel turn
+//! with the steering, and the glass is see-through. A parked prop of the same model is still drawn
+//! whole in its chunk's mesh, and a model without parts as one mesh, as before.
 
 use std::collections::HashMap;
 
@@ -21,6 +27,7 @@ use zombye_sim::map::Side;
 use zombye_sim::{TICK_DT, VehicleState};
 
 use crate::fog::FogState;
+use crate::furniture_models::PartKind;
 use crate::materials::WorldMaterials;
 use crate::meshgen::MeshBuilder;
 use crate::player::{CAR_SMOOTH_KEEP, CAR_SNAP_M, CAR_SNAP_RAD, LocalPlayer, short_turn};
@@ -31,6 +38,28 @@ use crate::zombie_render::lerp_angle;
 /// A vehicle's body, by its id.
 #[derive(Component)]
 struct CarBody(u32);
+
+/// How a car moves as drawn this frame, for its wheels and steering wheel.
+#[derive(Component, Default, Clone, Copy)]
+struct CarMotion {
+    speed: f32,
+    steer: f32,
+}
+
+/// A moving part of a car's model, a child of its [`CarBody`]: where it sits on the body, its
+/// radius (a wheel's) and how far it has rolled (radians).
+#[derive(Component)]
+struct CarPart {
+    kind: PartKind,
+    rest: Transform,
+    radius: f32,
+    /// A steering wheel's column points back toward the driver in its model: it turns the other way.
+    flip: bool,
+    rolled: f32,
+}
+
+/// How many turns of the steering wheel one of the front wheels' (a car's steering ratio).
+const STEERING_RATIO: f32 = 12.0;
 
 /// How a body sits on its springs as drawn, eased toward [`sway_target`].
 #[derive(Component, Default, Clone, Copy, Debug, PartialEq)]
@@ -193,25 +222,38 @@ fn follow_remote_cars(link: Res<ServerLink>, join: Res<JoinInfo>, me: Option<Res
     }
 }
 
-/// Each vehicle's mesh, made once (its wear goes by where it was parked).
+/// Each vehicle's meshes, made once (its wear goes by where it was parked): the body, and its
+/// moving parts in their own frames.
 #[derive(Resource, Default)]
-struct CarMeshes(HashMap<u32, Handle<Mesh>>);
+struct CarMeshes(HashMap<u32, CarLook>);
+
+#[derive(Clone)]
+struct CarLook {
+    body: Handle<Mesh>,
+    parts: Vec<(PartKind, Transform, Handle<Mesh>, f32)>,
+}
+
+/// The see-through glass of cars in parts (made on first use).
+#[derive(Resource, Default)]
+struct GlassMaterial(Option<Handle<StandardMaterial>>);
 
 pub struct VehiclesRenderPlugin;
 
 impl Plugin for VehiclesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CarMeshes>()
+            .init_resource::<GlassMaterial>()
             .init_resource::<RemoteCars>()
             .init_resource::<DrawnCars>()
             .add_systems(Startup, spawn_car_lights)
             .add_systems(FixedUpdate, follow_remote_cars.after(crate::server_link::ServerTick))
-            .add_systems(RunFixedMainLoop, draw_vehicles.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop));
+            .add_systems(RunFixedMainLoop, (draw_vehicles, turn_car_parts).chain().in_set(RunFixedMainLoopSystems::AfterFixedMainLoop));
     }
 }
 
-/// The mesh for vehicle `v`: its prop's model, facing +z (south) about the origin, or a grey-box.
-fn car_mesh(v: &zombye_sim::VehicleView, join: &JoinInfo, map: &ClientMap, shared: &SharedMeshes) -> Option<Mesh> {
+/// The meshes for vehicle `v`: its prop's model, facing +z (south) about the origin, split into its
+/// body and moving parts when the model has them; else a grey-box.
+fn car_look(v: &zombye_sim::VehicleView, join: &JoinInfo, map: &ClientMap, shared: &SharedMeshes, meshes: &mut Assets<Mesh>) -> Option<CarLook> {
     let kind = join.vehicles.kinds.get(v.kind as usize)?;
     let prop = map.0.prop_kinds.iter().find(|p| p.id == kind.prop);
     let model = prop.map_or(kind.prop.as_str(), |p| p.model());
@@ -219,6 +261,10 @@ fn car_mesh(v: &zombye_sim::VehicleView, join: &JoinInfo, map: &ClientMap, share
     // Worn as a prop parked where it was would be: the salt is where it was parked.
     let at = Vec2::new(v.from[0] as f32, v.from[1] as f32);
     let wear = crate::meshgen::decay::Wear::of(crate::meshgen::decay::look(), &kind.prop, at, models.body_colour(model, at));
+    if let Some(split) = models.split_worn(model, at, wear.as_ref()) {
+        let parts = split.parts.into_iter().map(|(k, rest, mesh, r)| (k, rest, meshes.add(mesh), r)).collect();
+        return Some(CarLook { body: meshes.add(split.body), parts });
+    }
     let mut mb = MeshBuilder::default();
     if !models.add_at_worn(&mut mb, model, Vec2::ZERO, Side::S, 0.0, wear.as_ref()) {
         let (size, color) = prop.map_or(((kind.width, kind.length, 1.5), (0.4, 0.4, 0.45)), |p| (p.size, p.color));
@@ -226,7 +272,41 @@ fn car_mesh(v: &zombye_sim::VehicleView, join: &JoinInfo, map: &ClientMap, share
     }
     // A model in the far copy only (stand-ins) is still drawn: take the full one.
     let _ = mb.take_far();
-    Some(mb.build())
+    Some(CarLook { body: meshes.add(mb.build()), parts: Vec::new() })
+}
+
+/// A moving part's place on its body this frame: a wheel rolled `rolled` radians about its axle
+/// (its own x) and, a front one, turned with the steering `steer` (radians, above 0 toward the
+/// car's right) about its own up; the steering wheel turned about its column (its own z).
+pub fn part_turn(kind: PartKind, rest: Transform, rolled: f32, steer: f32, flip: bool) -> Transform {
+    let turn = match kind {
+        PartKind::Wheel { front } => Quat::from_rotation_y(if front { -steer } else { 0.0 }) * Quat::from_rotation_x(rolled),
+        PartKind::SteeringWheel => Quat::from_rotation_z(steer * STEERING_RATIO * if flip { -1.0 } else { 1.0 }),
+        PartKind::Glass => Quat::IDENTITY,
+    };
+    Transform { rotation: rest.rotation * turn, ..rest }
+}
+
+/// Rolls the wheels by the distance each car went this frame and turns the front ones and the
+/// steering wheel with the steering.
+fn turn_car_parts(time: Res<Time>, cars: Query<&CarMotion>, mut parts: Query<(&mut CarPart, &mut Transform, &ChildOf)>) {
+    let dt = time.delta_secs();
+    for (mut part, mut tf, parent) in &mut parts {
+        if part.kind == PartKind::Glass {
+            continue;
+        }
+        let Ok(m) = cars.get(parent.parent()) else { continue };
+        if !(m.speed.is_finite() && m.steer.is_finite()) {
+            continue;
+        }
+        if matches!(part.kind, PartKind::Wheel { .. }) && m.speed != 0.0 {
+            part.rolled = (part.rolled + m.speed * dt / part.radius).rem_euclid(std::f32::consts::TAU);
+        }
+        let want = part_turn(part.kind, part.rest, part.rolled, m.steer, part.flip);
+        if *tf != want {
+            *tf = want;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -245,7 +325,9 @@ fn draw_vehicles(
     mut made: ResMut<CarMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnCars>,
-    mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility, &mut Sway)>,
+    mut glass: ResMut<GlassMaterial>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+    mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility, &mut Sway, &mut CarMotion)>,
 ) {
     let views = &link.curr.vehicles;
     if views.is_empty() && cars.is_empty() {
@@ -273,6 +355,15 @@ fn draw_vehicles(
             None => remote.0.get(&v.id).map_or((v.state.pos, v.state.heading), |c| c.shown(alpha)),
         };
         let now = mine.map(|c| c.curr).or_else(|| remote.0.get(&v.id).map(|c| c.curr)).unwrap_or(v.state);
+        // A car whose place isn't a number (#67) is drawn where the snapshot says, never at a NaN:
+        // a transform or light there turns everything lit near it black.
+        let (pos, heading, now) = if pos.is_finite() && heading.is_finite() && now.speed.is_finite() && now.steer.is_finite() {
+            (pos, heading, now)
+        } else if v.state.pos.is_finite() && v.state.heading.is_finite() {
+            (v.state.pos, v.state.heading, VehicleState { speed: 0.0, steer: 0.0, ..v.state })
+        } else {
+            continue;
+        };
         let kind = join.vehicles.kinds.get(v.kind as usize);
         let wheelbase = kind.map_or(2.6, |k| k.wheelbase);
         let shown = v.driver == 0 || v.driver == me_id || fog.visibility(pos) > 0.35;
@@ -290,8 +381,15 @@ fn draw_vehicles(
             length: kind.map_or(4.4, |k| k.length),
             width: kind.map_or(1.8, |k| k.width),
         };
-        if let Some((_, _, mut t, mut vis, mut sway)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {
+        if let Some((_, _, mut t, mut vis, mut sway, mut motion)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {
             sway.step(now.speed, now.steer, wheelbase, dt);
+            if !(sway.roll.is_finite() && sway.pitch.is_finite() && sway.accel.is_finite()) {
+                *sway = Sway::default();
+            }
+            let m = CarMotion { speed: now.speed, steer: now.steer };
+            if motion.speed != m.speed || motion.steer != m.steer {
+                *motion = m;
+            }
             car.braking = now.speed.abs() > 0.5 && sway.accel * now.speed.signum() < -BRAKING;
             drawn.0.push(car);
             let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw * sway.turn());
@@ -303,18 +401,37 @@ fn draw_vehicles(
             }
             continue;
         }
-        let mesh = match made.0.get(&v.id) {
+        let look = match made.0.get(&v.id) {
             Some(m) => m.clone(),
             None => {
-                let Some(m) = car_mesh(v, &join, &map, &shared) else { continue };
-                let h = meshes.add(m);
-                made.0.insert(v.id, h.clone());
-                h
+                let Some(m) = car_look(v, &join, &map, &shared, &mut meshes) else { continue };
+                made.0.insert(v.id, m.clone());
+                m
             }
         };
         drawn.0.push(car);
         let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw);
-        commands.spawn((CarBody(v.id), Sway::default(), Mesh3d(mesh), MeshMaterial3d(mats.props.clone()), tf, want));
+        let body = commands.spawn((CarBody(v.id), Sway::default(), CarMotion { speed: now.speed, steer: now.steer }, Mesh3d(look.body), MeshMaterial3d(mats.props.clone()), tf, want)).id();
+        for (kind, rest, mesh, radius) in look.parts {
+            // Its column's way along the car: one pointing back at the driver turns the other way.
+            let flip = (rest.rotation * Vec3::Z).z < 0.0;
+            let part = CarPart { kind, rest, radius, flip, rolled: 0.0 };
+            let at = part_turn(kind, rest, 0.0, now.steer, flip);
+            if kind == PartKind::Glass {
+                let m = glass.0.get_or_insert_with(|| {
+                    standard.add(StandardMaterial {
+                        base_color: Color::srgba(0.55, 0.62, 0.68, 0.42),
+                        alpha_mode: AlphaMode::Blend,
+                        perceptual_roughness: 0.08,
+                        reflectance: 0.6,
+                        ..default()
+                    })
+                });
+                commands.spawn((part, Mesh3d(mesh), MeshMaterial3d(m.clone()), at, ChildOf(body), bevy::light::NotShadowCaster));
+            } else {
+                commands.spawn((part, Mesh3d(mesh), MeshMaterial3d(mats.props.clone()), at, ChildOf(body)));
+            }
+        }
     }
 }
 
@@ -380,7 +497,8 @@ pub fn car_lights(
     mut seen: ResMut<crate::lights::NightLights>,
 ) {
     let from = link.curr.players.iter().find(|p| p.id == me.id).map(|p| Vec2::from(p.pos));
-    let lit = lit_cars(&drawn.0, from);
+    // Never a light at a place that isn't a number (#67: one there blacks out what it would light).
+    let lit: Vec<DrawnCar> = lit_cars(&drawn.0, from).into_iter().filter(|c| c.pos.is_finite() && c.heading.is_finite()).collect();
     let dim = 1.0 - 0.85 * daylight.0;
     let dark = crate::lights::darkness(daylight.0);
     for (slot, mut spot, mut tf, mut vis) in &mut heads {
@@ -527,5 +645,28 @@ mod tests {
         let cars = [car(1, 50.0, true, false), car(2, 5.0, true, false), car(3, 2.0, false, false), car(4, 30.0, true, true), car(5, 20.0, true, false), car(6, 200.0, true, false)];
         let lit: Vec<u32> = lit_cars(&cars, Some(Vec2::ZERO)).iter().map(|c| c.id).collect();
         assert_eq!(lit, vec![4, 2, 5]);
+    }
+
+    #[test]
+    fn wheels_roll_forward_and_the_front_ones_steer() {
+        let rest = Transform::from_xyz(0.8, 0.35, 1.3);
+        // Rolled forward a quarter turn, the top of a wheel has gone toward the front (+z).
+        let t = part_turn(PartKind::Wheel { front: false }, rest, std::f32::consts::FRAC_PI_2, 0.4, false);
+        assert!((t.rotation * Vec3::Y).z > 0.99, "{:?}", t.rotation * Vec3::Y);
+        assert_eq!(t.translation, rest.translation);
+        // A back wheel doesn't steer; a front one turns its axle with the steering.
+        assert!((t.rotation * Vec3::X - Vec3::X).length() < 1e-5);
+        let f = part_turn(PartKind::Wheel { front: true }, rest, 0.0, 0.4, false);
+        assert!((f.rotation * Vec3::X).z.abs() > 0.3);
+        // Steering right (above 0) turns the car's heading up, which on screen is a turn about -y:
+        // the front of the wheel (+z) goes toward the car's right (-x, the body faces +z).
+        assert!((f.rotation * Vec3::Z).x < -0.3, "{:?}", f.rotation * Vec3::Z);
+        // The steering wheel goes round STEERING_RATIO times as far, the other way when flipped.
+        let s = part_turn(PartKind::SteeringWheel, Transform::default(), 0.0, 0.1, false);
+        let back = part_turn(PartKind::SteeringWheel, Transform::default(), 0.0, 0.1, true);
+        assert!((s.rotation.to_axis_angle().1 - 0.1 * STEERING_RATIO).abs() < 1e-4);
+        assert!(((s.rotation * Vec3::X) - (back.rotation * Vec3::X)).length() > 0.5);
+        // Glass stays where it is.
+        assert_eq!(part_turn(PartKind::Glass, rest, 1.0, 1.0, false), rest);
     }
 }

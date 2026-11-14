@@ -43,6 +43,51 @@ pub struct FurnitureModel {
     height: f32,
     /// Its main colour, if a saturated one covers a good part of it ([`body_colour`]).
     body: Option<Vec3>,
+    /// The parts a vehicle moves (#66): nodes named `wheel_fl`, `wheel_fr`, `wheel_rl`, `wheel_rr`,
+    /// `steering_wheel` and `glass`, each its own triangles in its node's frame. Their triangles
+    /// are in `tris` too (a parked prop draws them in place); empty for every other model.
+    parts: Vec<ModelPart>,
+    /// For each of `tris` whose it is: the index into `parts`, or `u8::MAX` for the body's (empty
+    /// when there are no parts).
+    part_of: Vec<u8>,
+}
+
+/// Which moving part of a vehicle's model a node is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartKind {
+    /// A wheel: front (`true`) or back, left or right. It rolls about its own x.
+    Wheel { front: bool },
+    /// It turns with the steering about its own z, the column.
+    SteeringWheel,
+    /// The glass: drawn see-through.
+    Glass,
+}
+
+impl PartKind {
+    fn of(name: &str) -> Option<Self> {
+        Some(match name {
+            "wheel_fl" | "wheel_fr" => Self::Wheel { front: true },
+            "wheel_rl" | "wheel_rr" => Self::Wheel { front: false },
+            "steering_wheel" => Self::SteeringWheel,
+            "glass" => Self::Glass,
+            _ => return None,
+        })
+    }
+}
+
+/// One moving part of a model: its triangles in its own frame, and that frame in the model's.
+pub struct ModelPart {
+    pub kind: PartKind,
+    /// The part's frame in the model's (its node's transform, parents included).
+    pub pivot: Mat4,
+    tris: Vec<Tri>,
+}
+
+/// A vehicle's model split for drawing: the body without its moving parts, and each part as a
+/// mesh in its own frame (`vehicles_render.rs`).
+pub struct SplitModel {
+    pub body: Mesh,
+    pub parts: Vec<(PartKind, Transform, Mesh, f32)>,
 }
 
 #[derive(Default)]
@@ -217,6 +262,41 @@ impl FurnitureModels {
         self.pick(kind, Self::salt_at(centre))?.body
     }
 
+    /// The model [`Self::add_at_worn`] draws for `kind` at the origin facing south, split into its
+    /// body and moving parts (each part's mesh in its own frame, with that frame and, for a wheel,
+    /// its radius), worn as `wear` says; `salt_at` is where it was parked (which variant, as a
+    /// prop there would be). None when the model has no parts or there's no model.
+    pub fn split_worn(&self, kind: &str, salt_at: Vec2, wear: Option<&crate::meshgen::decay::Wear>) -> Option<SplitModel> {
+        let m = self.pick(kind, Self::salt_at(salt_at))?;
+        if m.parts.is_empty() {
+            return None;
+        }
+        let colour = |p: &[Vec3; 3], n: &[Vec3; 3], c: LinearRgba| match wear {
+            Some(w) => [0, 1, 2].map(|i| w.colour(p[i], n[i], c)),
+            None => [c; 3],
+        };
+        let mut mb = MeshBuilder::default();
+        for ((p, n, c, _), _) in m.tris.iter().zip(&m.part_of).filter(|(_, o)| **o == u8::MAX) {
+            mb.triangle_with_normals_shaded(*p, *n, colour(p, n, *c));
+        }
+        let parts = m
+            .parts
+            .iter()
+            .map(|part| {
+                let mut pb = MeshBuilder::default();
+                let (lo, hi) = part.tris.iter().flat_map(|t| t.0).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
+                for (p, n, c, _) in &part.tris {
+                    // Worn by where the corner is in the model, as the whole model would be.
+                    let (wp, wn) = (p.map(|p| part.pivot.transform_point3(p)), n.map(|n| part.pivot.transform_vector3(n).normalize_or_zero()));
+                    pb.triangle_with_normals_shaded(*p, *n, colour(&wp, &wn, *c));
+                }
+                let radius = ((hi.y - lo.y).max(hi.z - lo.z) * 0.5).max(0.05);
+                (part.kind, Transform::from_matrix(part.pivot), pb.build(), radius)
+            })
+            .collect();
+        Some(SplitModel { body: mb.build(), parts })
+    }
+
     fn salt_at(centre: Vec2) -> u32 {
         (centre.x as i32 as u32).wrapping_mul(73_856_093) ^ (centre.y as i32 as u32).wrapping_mul(19_349_663)
     }
@@ -293,10 +373,28 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| e.to_string())?;
     let blob = gltf.blob.as_deref();
     let mut tris = Vec::new();
+    let mut parts = Vec::new();
+    let mut part_of: Vec<u8> = Vec::new();
     let mut footprint = None;
-    for node in gltf.nodes() {
+    // Every node with its transform in the model's frame (its parents' included): the scene's
+    // tree, or with no scene every node as it is.
+    let mut placed: Vec<(gltf::Node, Mat4)> = Vec::new();
+    fn walk<'a>(node: gltf::Node<'a>, parent: Mat4, out: &mut Vec<(gltf::Node<'a>, Mat4)>) {
+        let tf = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        for child in node.children() {
+            walk(child, tf, out);
+        }
+        out.push((node, tf));
+    }
+    match gltf.default_scene().or_else(|| gltf.scenes().next()) {
+        Some(scene) => scene.nodes().for_each(|n| walk(n, Mat4::IDENTITY, &mut placed)),
+        None => placed.extend(gltf.nodes().map(|n| {
+            let m = Mat4::from_cols_array_2d(&n.transform().matrix());
+            (n, m)
+        })),
+    }
+    for (node, tf) in placed {
         let Some(mesh) = node.mesh() else { continue };
-        let tf = Mat4::from_cols_array_2d(&node.transform().matrix());
         if let Some(extras) = node.extras() {
             #[derive(serde::Deserialize)]
             struct Extras {
@@ -306,6 +404,9 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                 footprint = Some(Vec2::new(w, d));
             }
         }
+        let part = node.name().and_then(PartKind::of).filter(|_| parts.len() < 32 && tf.is_finite() && tf.determinant().abs() > 1e-9);
+        let first = tris.len();
+        let mut local = Vec::new();
         for prim in mesh.primitives() {
             let c = prim.material().pbr_metallic_roughness().base_color_factor();
             let leaf = prim.material().name().is_some_and(|n| n.starts_with("leaves"));
@@ -314,11 +415,13 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                 gltf::buffer::Source::Bin => blob,
                 gltf::buffer::Source::Uri(_) => None,
             });
-            let pos: Vec<Vec3> = reader.read_positions().ok_or("a primitive without positions")?.map(|p| tf.transform_point3(Vec3::from(p))).collect();
-            let nrm: Vec<Vec3> = match reader.read_normals() {
-                Some(n) => n.map(|n| tf.transform_vector3(Vec3::from(n)).normalize_or_zero()).collect(),
+            let raw: Vec<Vec3> = reader.read_positions().ok_or("a primitive without positions")?.map(Vec3::from).collect();
+            let raw_n: Vec<Vec3> = match reader.read_normals() {
+                Some(n) => n.map(Vec3::from).collect(),
                 None => return Err("a primitive without normals".into()),
             };
+            let pos: Vec<Vec3> = raw.iter().map(|p| tf.transform_point3(*p)).collect();
+            let nrm: Vec<Vec3> = raw_n.iter().map(|n| tf.transform_vector3(*n).normalize_or_zero()).collect();
             // Vertex colours, where a model has them (one painted from a texture atlas): a triangle
             // takes the mean of its corners', times the material's colour.
             let tint: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
@@ -328,7 +431,7 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
             };
             for t in idx.chunks_exact(3) {
                 let [a, b, c] = [t[0], t[1], t[2]].map(|i| i as usize);
-                if a.max(b).max(c) >= pos.len() {
+                if a.max(b).max(c) >= pos.len() || a.max(b).max(c) >= nrm.len() {
                     return Err("index out of range".into());
                 }
                 let color = match &tint {
@@ -339,8 +442,20 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                     _ => color,
                 };
                 tris.push(([pos[a], pos[b], pos[c]], [nrm[a], nrm[b], nrm[c]], color, leaf));
+                if part.is_some() {
+                    local.push(([raw[a], raw[b], raw[c]], [raw_n[a], raw_n[b], raw_n[c]].map(|n| n.normalize_or_zero()), color, leaf));
+                }
             }
         }
+        let owner = match part.filter(|_| !local.is_empty()) {
+            Some(kind) => {
+                parts.push(ModelPart { kind, pivot: tf, tris: local });
+                (parts.len() - 1) as u8
+            }
+            None => u8::MAX,
+        };
+        part_of.resize(first, u8::MAX);
+        part_of.resize(tris.len(), owner);
     }
     if tris.is_empty() {
         return Err("no triangles".into());
@@ -353,7 +468,10 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
     let height = tris.iter().flat_map(|t| t.0).fold(0.0f32, |h, p| h.max(p.y));
     let far = simplify(&tris);
     let body = body_colour(&tris);
-    Ok(FurnitureModel { tris, far, footprint, height, body })
+    if parts.is_empty() {
+        part_of.clear();
+    }
+    Ok(FurnitureModel { tris, far, footprint, height, body, parts, part_of })
 }
 
 /// A part of a model (its foliage, or the rest) of at most this many triangles is drawn as it is
@@ -747,8 +865,8 @@ mod tests {
     #[test]
     fn stand_ins_go_to_the_far_copy_of_a_mesh() {
         let tris = fine_sheet(40, 0.025);
-        let heavy = FurnitureModel { far: simplify(&tris), tris, footprint: Vec2::ONE, height: 1.0, body: None };
-        let light = FurnitureModel { far: None, tris: fine_sheet(4, 0.25), footprint: Vec2::ONE, height: 1.0, body: None };
+        let heavy = FurnitureModel { far: simplify(&tris), tris, footprint: Vec2::ONE, height: 1.0, body: None, parts: Vec::new(), part_of: Vec::new() };
+        let light = FurnitureModel { far: None, tris: fine_sheet(4, 0.25), footprint: Vec2::ONE, height: 1.0, body: None, parts: Vec::new(), part_of: Vec::new() };
         let far_tris = heavy.far.as_ref().unwrap().len();
         let models = FurnitureModels(HashMap::from([("tree".to_string(), heavy), ("post".to_string(), light)]));
         let tag = crate::meshgen::CutTag::default();
