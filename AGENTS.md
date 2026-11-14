@@ -3269,6 +3269,7 @@ one you pick. **There is no hosted service:** the game asks nothing of ours.
   server that fails is shown in orange
   with the reason in its details. A wrong password, a name in use and other game data are only found by joining.
 - **Community servers** are everything else: the list's servers (featured ones first) and the ones added by hand.
+- **Two looks** (`browser_ui::Skin`): in the game (F7) the panel is one of the HUD's painted sheets; while the main menu is up (`BrowserUi::over_menu`, told by `main_menu::skin_browser`) it is drawn as one of the menu's screens, in `menu_skin.rs`'s colours and buttons, where the menu's other screens stand. A new piece of the panel takes its colours from the `Skin` it is handed.
 - **Your own servers:** type `host[:port]` in the Address field and Enter adds it (kept in `settings.ron`,
   `ClientSettings::servers`; Delete takes one off; the list's can't be taken off). The Name field is the name you
   join under (`ClientSettings::name`, saved on joining; `--name` wins), Password the join password.

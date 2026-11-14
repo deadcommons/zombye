@@ -39,6 +39,7 @@ use zombye_net::browser::{self, Browser, ListState, Row, Status};
 
 use crate::Options;
 use crate::server_link::ServerLink;
+use crate::menu_skin::{self as skin, Look};
 use crate::theme::{self, BODY, DIM, GOLD, INK, ROW_HOVER, ROW_PICKED, SMALL, TEXT, TITLE, font};
 use crate::ui_scale::SettingsStore;
 
@@ -46,12 +47,46 @@ use crate::ui_scale::SettingsStore;
 const WIDTH: f32 = 932.0 + 2.0 * theme::SHEET_PAD.0;
 /// Lines of the list on show at once (servers and the two section headings).
 const VISIBLE: usize = 10;
+/// Over the main menu the list is shorter, so the screen ends above the menu's footer in a
+/// window of 1280 x 720.
+const VISIBLE_MENU: usize = 8;
+
+/// How many lines of the list are on show: fewer over the main menu.
+fn visible(menu: bool) -> usize {
+    if menu { VISIBLE_MENU } else { VISIBLE }
+}
 const LINE_H: f32 = 24.0;
-// The skin is `theme.rs`'s (Linear DCM-61): a sheet, light worn buttons, flat rows.
+// In the game the skin is `theme.rs`'s: a sheet, light worn buttons, flat rows. Over the main
+// menu it is the menu's (`Skin`).
 const GOOD: Color = Color::srgb(0.6, 0.85, 0.55);
 const WARN: Color = Color::srgb(0.95, 0.62, 0.35);
 const ROW_BG: Color = theme::ROW;
 const FIELD_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
+/// How the panel is drawn: in the game it is one of the HUD's painted sheets; opened from the main
+/// menu it is a screen of the menu's, in the menu's look (`menu_skin.rs`).
+#[derive(Clone, Copy)]
+struct Skin {
+    menu: bool,
+    text: Color,
+    dim: Color,
+    accent: Color,
+    row: Color,
+    row_hover: Color,
+    row_picked: Color,
+    field: Color,
+    field_line: Color,
+}
+
+impl Skin {
+    fn of(menu: bool) -> Self {
+        if menu {
+            Skin { menu, text: skin::BONE, dim: skin::DIM, accent: skin::ACCENT, row: skin::CELL, row_hover: Color::srgb(0.244, 0.212, 0.189), row_picked: Color::srgb(0.36, 0.29, 0.19), field: skin::CELL, field_line: skin::LINE }
+        } else {
+            Skin { menu, text: TEXT, dim: DIM, accent: GOLD, row: ROW_BG, row_hover: ROW_HOVER, row_picked: ROW_PICKED, field: FIELD_BG, field_line: Color::NONE }
+        }
+    }
+}
+
 const MAX_NAME: usize = 24;
 const MAX_FIELD: usize = 80;
 /// The columns' widths, in UI pixels: name, players, ping, mode, locked, mods (the note takes the rest).
@@ -135,12 +170,25 @@ pub struct BrowserUi {
     dirty: bool,
     /// `--browser-join` done.
     scripted: bool,
+    /// Drawn as a screen of the main menu's (the menu is up), not as the game's panel.
+    menu: bool,
 }
 
 impl BrowserUi {
     /// Open at the next frame (the main menu's Join a game).
     pub fn ask_open(&mut self) {
         self.want_open = true;
+    }
+
+    pub fn is_over_menu(&self) -> bool {
+        self.menu
+    }
+
+    /// Whether the main menu is up: the panel is then drawn in the menu's look.
+    pub fn over_menu(&mut self, menu: bool) {
+        if self.menu != menu {
+            (self.menu, self.dirty) = (menu, true);
+        }
     }
 }
 
@@ -242,17 +290,17 @@ fn lines(b: &Browser) -> Vec<Line> {
     out
 }
 
-/// The first line to show so that line `at` of `n` is among the `VISIBLE` on show, moving as
+/// The first line to show so that line `at` of `n` is among the `show` on show, moving as
 /// little as possible from `top`.
-fn scrolled(top: usize, at: Option<usize>, n: usize) -> usize {
-    let most = n.saturating_sub(VISIBLE);
+fn scrolled(top: usize, at: Option<usize>, n: usize, show: usize) -> usize {
+    let most = n.saturating_sub(show);
     let mut top = top.min(most);
     if let Some(at) = at {
         // A server just under a heading shows its heading too.
         if at.saturating_sub(1) < top {
             top = at.saturating_sub(1);
-        } else if at >= top + VISIBLE {
-            top = at + 1 - VISIBLE;
+        } else if at >= top + show {
+            top = at + 1 - show;
         }
     }
     top.min(most)
@@ -429,7 +477,7 @@ pub(crate) fn keys(
     for w in wheel.read() {
         let lines = if w.unit == MouseScrollUnit::Line { w.y } else { w.y / LINE_H };
         let n = ui.browser.as_ref().map_or(0, |b| lines_len(b));
-        let top = (ui.top as f32 - lines.round()).clamp(0.0, n.saturating_sub(VISIBLE) as f32) as usize;
+        let top = (ui.top as f32 - lines.round()).clamp(0.0, n.saturating_sub(visible(ui.menu)) as f32) as usize;
         if top != ui.top {
             ui.top = top;
             ui.dirty = true;
@@ -633,34 +681,52 @@ fn cell(row: &mut ChildSpawnerCommands, text: String, width: Option<f32>, colour
     });
 }
 
-fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, act: Act) -> EntityCommands<'a> {
-    let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, theme::button(false)));
-    e.with_children(|b| {
-        b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
-    });
+fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, act: Act, k: Skin) -> EntityCommands<'a> {
+    let mut e = if k.menu {
+        skin::button(parent, label, None, if act == Act::Join { Look::Primary } else { Look::Plain }, Val::Auto)
+    } else {
+        let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, theme::button(false)));
+        e.with_children(|b| {
+            b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        e
+    };
     e.observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(act.clone()));
     e
 }
 
-fn field(parent: &mut ChildSpawnerCommands, label: &str, text: String, focused: bool, width: f32, which: Field) {
+fn field(parent: &mut ChildSpawnerCommands, label: &str, text: String, focused: bool, width: f32, which: Field, k: Skin) {
     parent.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|f| {
-        f.spawn((Text::new(label.to_string()), font(BODY), TextColor(DIM), Pickable::IGNORE));
-        f.spawn((Node { width: px(width), height: px(24.0), padding: UiRect::axes(px(6), px(3)), overflow: Overflow::clip(), border: UiRect::all(px(1)), ..default() }, BackgroundColor(FIELD_BG), BorderColor::all(if focused { GOLD } else { Color::NONE })))
+        f.spawn((Text::new(label.to_string()), font(BODY), TextColor(k.dim), Pickable::IGNORE));
+        f.spawn((Node { width: px(width), height: px(if k.menu { 30.0 } else { 24.0 }), padding: UiRect::axes(px(6), px(3)), align_items: AlignItems::Center, overflow: Overflow::clip(), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(if k.menu { 4.0 } else { 0.0 })), ..default() }, BackgroundColor(k.field), BorderColor::all(if focused { k.accent } else { k.field_line })))
             .with_children(|b| {
-                b.spawn((Text::new(if focused { format!("{text}_") } else { text }), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                b.spawn((Text::new(if focused { format!("{text}_") } else { text }), font(BODY), TextColor(k.text), TextLayout::no_wrap(), Pickable::IGNORE));
             })
             .observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(Act::Focus(which)));
     });
 }
 
-fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>, options: Res<Options>, mut root: Query<(Entity, &mut Visibility), With<Root>>) {
-    let Ok((root, mut vis)) = root.single_mut() else { return };
+fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>, options: Res<Options>, mut root: Query<(Entity, &mut Visibility, &mut Node), With<Root>>, mut drawn_as: Local<Option<bool>>) {
+    let Ok((root, mut vis, mut node)) = root.single_mut() else { return };
     let want = if ui.open { Visibility::Inherited } else { Visibility::Hidden };
     if *vis != want {
         *vis = want;
     }
     if !ui.open || !std::mem::take(&mut ui.dirty) {
         return;
+    }
+    let k = Skin::of(ui.menu);
+    if *drawn_as != Some(k.menu) {
+        *drawn_as = Some(k.menu);
+        // In the menu it stands where the menu's own screens do, on the menu's ground; in the
+        // game it is a sheet at the top of the window.
+        if k.menu {
+            (node.left, node.top, node.margin, node.width, node.padding) = (percent(9), px(10), UiRect::ZERO, px(WIDTH - 2.0 * theme::SHEET_PAD.0), UiRect::ZERO);
+            commands.entity(root).remove::<ImageNode>();
+        } else {
+            (node.left, node.top, node.margin, node.width, node.padding) = (percent(50), px(14), UiRect::left(px(-WIDTH / 2.0)), px(WIDTH), UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)));
+            commands.entity(root).insert(theme::sheet());
+        }
     }
     let agent = options.agent || options.autoplay;
     let Some(b) = &ui.browser else { return };
@@ -669,18 +735,21 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     let first = all.iter().find_map(|l| if let Line::Server(a) = l { Some(a.clone()) } else { None });
     let selected = ui.selected.clone().filter(|s| b.row(s).is_some()).or(first);
     let at = selected.as_ref().and_then(|s| all.iter().position(|l| *l == Line::Server(s.clone())));
-    let top = scrolled(ui.top, at, all.len());
+    let show = visible(k.menu);
+    let top = scrolled(ui.top, at, all.len(), show);
+    // A file is named by its name alone: its whole path says nothing to a player.
+    let named = |s: &str| if s.starts_with("http://") || s.starts_with("https://") { s.to_string() } else { std::path::Path::new(s).file_name().map_or(s.to_string(), |n| n.to_string_lossy().into_owned()) };
     let source = match (&b.list, b.source()) {
         (_, "") => "Community list: none set (--server-list FILE or http://..., or server_list in settings.ron), so only servers you add".to_string(),
-        (ListState::Loading, s) => format!("Reading the community list: {s}"),
-        (ListState::Ready, s) => format!("Community list: {s}"),
+        (ListState::Loading, s) => format!("Reading the community list: {}", named(s)),
+        (ListState::Ready, s) => format!("Community list: {}", named(s)),
         (ListState::Failed(e), _) => format!("Can't use the community list: {e}"),
     };
-    let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { DIM };
+    let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { k.dim };
     let summary = b.summary();
     let picked = selected.as_ref().and_then(|s| b.row(s)).map(|r| details(r, &mods.0, agent));
-    let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(VISIBLE).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
-    let more = (top, all.len().saturating_sub(top + VISIBLE));
+    let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(show).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
+    let more = (top, all.len().saturating_sub(top + show));
     let (focus, name, password, address, note, warn) = (ui.field, ui.name.clone(), "*".repeat(ui.password.chars().count()), ui.address.clone(), ui.note.clone(), ui.warn);
     ui.top = top;
     ui.selected = selected.clone();
@@ -688,19 +757,25 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     commands.entity(root).despawn_children();
     commands.entity(root).with_children(|c| {
         // Opaque inside the sheet's ragged edge: it is a screen of its own, and the HUD under it
-        // would read through.
-        c.spawn((
-            Node { position_type: PositionType::Absolute, left: px(theme::SHEET_PAD.0 - 4.0), right: px(theme::SHEET_PAD.0 - 4.0), top: px(theme::SHEET_PAD.1 - 4.0), bottom: px(theme::SHEET_PAD.1 - 4.0), ..default() },
-            BackgroundColor(theme::PANEL_BG.with_alpha(1.0)),
-            Pickable::IGNORE,
-        ));
+        // would read through. (In the menu the menu's own ground is behind it.)
+        if !k.menu {
+            c.spawn((
+                Node { position_type: PositionType::Absolute, left: px(theme::SHEET_PAD.0 - 4.0), right: px(theme::SHEET_PAD.0 - 4.0), top: px(theme::SHEET_PAD.1 - 4.0), bottom: px(theme::SHEET_PAD.1 - 4.0), ..default() },
+                BackgroundColor(theme::PANEL_BG.with_alpha(1.0)),
+                Pickable::IGNORE,
+            ));
+        }
         // Title, and what the list holds.
         c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
-            t.spawn((Text::new("SERVERS"), theme::head(TITLE), TextColor(TEXT), Pickable::IGNORE));
+            if k.menu {
+                t.spawn((Text::new("JOIN A GAME"), theme::brand(28.0), TextColor(k.text), Pickable::IGNORE));
+            } else {
+                t.spawn((Text::new("SERVERS"), theme::head(TITLE), TextColor(TEXT), Pickable::IGNORE));
+            }
             t.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
-                r.spawn((Text::new(summary), font(BODY), TextColor(DIM), Pickable::IGNORE));
-                button(r, "Refresh (R)", Act::Refresh);
-                button(r, "Close (Esc)", Act::Close);
+                r.spawn((Text::new(summary), font(BODY), TextColor(k.dim), Pickable::IGNORE));
+                button(r, "Refresh (R)", Act::Refresh, k);
+                button(r, if k.menu { "Back (Esc)" } else { "Close (Esc)" }, Act::Close, k);
             });
         });
         c.spawn((Node { overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|s| {
@@ -708,32 +783,33 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
         });
         // The columns.
         c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), padding: UiRect::horizontal(px(8)), margin: UiRect::top(px(4)), ..default() }, Pickable::IGNORE)).with_children(|h| {
-            for (k, label) in ["Name", "Players", "Ping", "Mode", "Locked", "Mods"].into_iter().enumerate() {
-                cell(h, label.to_string(), Some(COLS[k]), DIM, SMALL);
+            for (n, label) in ["Name", "Players", "Ping", "Mode", "Locked", "Mods"].into_iter().enumerate() {
+                cell(h, label.to_string(), Some(COLS[n]), k.dim, SMALL);
             }
-            cell(h, if more.0 > 0 { format!("Note   ({} more above)", more.0) } else { "Note".to_string() }, None, DIM, SMALL);
+            cell(h, if more.0 > 0 { format!("Note   ({} more above)", more.0) } else { "Note".to_string() }, None, k.dim, SMALL);
         });
         // The list: always the same height, so the rest doesn't jump as answers come.
-        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(VISIBLE as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
+        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(show as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
             for (line, cells) in rows {
                 match (line, cells) {
                     (Line::Note(text), _) => {
                         list.spawn((Node { height: px(LINE_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
-                            h.spawn((Text::new(text), font(BODY), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                            h.spawn((Text::new(text), font(BODY), TextColor(k.dim), TextLayout::no_wrap(), Pickable::IGNORE));
                         });
                     }
                     (Line::Head(title, n), _) => {
                         list.spawn((Node { height: px(LINE_H), align_items: AlignItems::End, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
-                            h.spawn((Text::new(format!("{title}  ({n})").to_uppercase()), theme::head(BODY + 1.0), TextColor(GOLD), Pickable::IGNORE));
+                            h.spawn((Text::new(format!("{title}  ({n})").to_uppercase()), if k.menu { theme::brand(BODY + 4.0) } else { theme::head(BODY + 1.0) }, TextColor(k.accent), Pickable::IGNORE));
                         });
                     }
                     (Line::Server(addr), Some(v)) => {
                         let is_picked = selected.as_deref() == Some(addr.as_str());
-                        let rest = if is_picked { ROW_PICKED } else { ROW_BG };
+                        let rest = if is_picked { k.row_picked } else { k.row };
+                        let over = if is_picked { k.row_picked } else { k.row_hover };
                         let colour = match v.state {
-                            RowState::Joinable => TEXT,
+                            RowState::Joinable => k.text,
                             RowState::Blocked => WARN,
-                            RowState::Asking | RowState::Offline => DIM,
+                            RowState::Asking | RowState::Offline => k.dim,
                         };
                         list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(LINE_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(rest)))
                             .with_children(|r| {
@@ -743,11 +819,11 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
                                 cell(r, v.mode, Some(COLS[3]), colour, BODY);
                                 cell(r, v.locked, Some(COLS[4]), colour, BODY);
                                 cell(r, v.mods, Some(COLS[5]), colour, BODY);
-                                cell(r, v.note, None, DIM, BODY);
+                                cell(r, v.note, None, k.dim, BODY);
                             })
                             .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
                                 if let Ok(mut bg) = q.get_mut(ev.entity) {
-                                    bg.0 = if is_picked { ROW_PICKED } else { ROW_HOVER };
+                                    bg.0 = over;
                                 }
                             })
                             .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
@@ -762,45 +838,53 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
             }
         });
         if more.1 > 0 {
-            c.spawn((Text::new(format!("{} more below (wheel, or Down)", more.1)), font(SMALL), TextColor(DIM), Pickable::IGNORE));
+            c.spawn((Text::new(format!("{} more below (wheel, or Down)", more.1)), font(SMALL), TextColor(k.dim), Pickable::IGNORE));
         }
-        c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
+        if k.menu {
+            c.spawn((Node { width: percent(100), height: px(1), flex_shrink: 0.0, margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(skin::LINE), Pickable::IGNORE));
+        } else {
+            c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
+        }
         // The picked server: can it be joined, and its rules.
         c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), min_height: px(238), ..default() }, Pickable::IGNORE)).with_children(|d| match picked {
             None => {
-                d.spawn((Text::new("Pick a server to see its rules: click one, or Up / Down."), font(BODY), TextColor(DIM), Pickable::IGNORE));
+                d.spawn((Text::new("Pick a server to see its rules: click one, or Up / Down."), font(BODY), TextColor(k.dim), Pickable::IGNORE));
             }
             Some((head, line, colour, rules)) => {
                 d.spawn((Node { overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|h| {
-                    h.spawn((Text::new(head), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                    h.spawn((Text::new(head), font(BODY), TextColor(k.text), TextLayout::no_wrap(), Pickable::IGNORE));
                 });
                 d.spawn((Text::new(line), font(BODY), TextColor(colour), Pickable::IGNORE));
                 for (label, text) in rules {
                     d.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|row| {
-                        row.spawn((Text::new(label), font(SMALL), TextColor(DIM), Node { width: px(112), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
-                        row.spawn((Text::new(text), font(SMALL), TextColor(TEXT), Pickable::IGNORE));
+                        row.spawn((Text::new(label), font(SMALL), TextColor(k.dim), Node { width: px(112), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                        row.spawn((Text::new(text), font(SMALL), TextColor(k.text), Pickable::IGNORE));
                     });
                 }
             }
         });
-        c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
+        if k.menu {
+            c.spawn((Node { width: percent(100), height: px(1), flex_shrink: 0.0, margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(skin::LINE), Pickable::IGNORE));
+        } else {
+            c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
+        }
         // Who you join as, and a server of your own.
         c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(14), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|f| {
-            field(f, "Name", name, focus == Some(Field::Name), 150.0, Field::Name);
-            field(f, "Password", password, focus == Some(Field::Password), 130.0, Field::Password);
-            field(f, "Address", address, focus == Some(Field::Address), 230.0, Field::Address);
+            field(f, "Name", name, focus == Some(Field::Name), 150.0, Field::Name, k);
+            field(f, "Password", password, focus == Some(Field::Password), 130.0, Field::Password, k);
+            field(f, "Address", address, focus == Some(Field::Address), 230.0, Field::Address, k);
             f.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE));
-            button(f, "Join (Enter)", Act::Join);
+            button(f, "Join (Enter)", Act::Join, k);
         });
         let hint = match focus {
             Some(Field::Address) => "Type host or host:port, Enter adds it to your servers  |  Tab next field  |  Esc done",
             Some(Field::Password) => "Enter joins with this password  |  Tab next field  |  Esc done",
             Some(Field::Name) => "The name you play under (none: the server makes one up)  |  Tab next field  |  Enter or Esc done",
-            None => "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  F7 or Esc close",
+            None => if k.menu { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added" } else { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  F7 or Esc close" },
         };
-        c.spawn((Text::new(hint), font(SMALL), TextColor(DIM), Pickable::IGNORE));
+        c.spawn((Text::new(hint), font(SMALL), TextColor(k.dim), Pickable::IGNORE));
         if !note.is_empty() {
-            c.spawn((Text::new(note), font(BODY), TextColor(if warn { WARN } else { GOLD }), Pickable::IGNORE));
+            c.spawn((Text::new(note), font(BODY), TextColor(if warn { WARN } else { k.accent }), Pickable::IGNORE));
         }
     });
 }
@@ -898,13 +982,14 @@ mod tests {
 
     #[test]
     fn the_list_scrolls_to_keep_the_picked_server_on_show() {
-        assert_eq!(scrolled(0, None, 5), 0);
-        assert_eq!(scrolled(3, None, 5), 0, "a short list doesn't scroll");
-        assert_eq!(scrolled(0, Some(VISIBLE), 30), 1);
-        assert_eq!(scrolled(0, Some(29), 30), 30 - VISIBLE);
-        assert_eq!(scrolled(20, Some(5), 30), 4, "the line above comes along (a heading)");
-        assert_eq!(scrolled(4, Some(6), 30), 4, "already on show: stays put");
-        assert_eq!(scrolled(99, None, 30), 30 - VISIBLE);
+        assert_eq!(scrolled(0, None, 5, VISIBLE), 0);
+        assert_eq!(scrolled(3, None, 5, VISIBLE), 0, "a short list doesn't scroll");
+        assert_eq!(scrolled(0, Some(VISIBLE), 30, VISIBLE), 1);
+        assert_eq!(scrolled(0, Some(29), 30, VISIBLE), 30 - VISIBLE);
+        assert_eq!(scrolled(20, Some(5), 30, VISIBLE), 4, "the line above comes along (a heading)");
+        assert_eq!(scrolled(4, Some(6), 30, VISIBLE), 4, "already on show: stays put");
+        assert_eq!(scrolled(99, None, 30, VISIBLE), 30 - VISIBLE);
+        assert_eq!(scrolled(0, Some(29), 30, visible(true)), 30 - VISIBLE_MENU, "the menu's shorter list");
     }
 
     #[test]

@@ -396,7 +396,7 @@ pub fn run(options: Options) -> ! {
 fn add_menu(app: &mut App) {
     app.add_systems(Startup, open_join)
         .add_systems(PreUpdate, keys.in_set(MenuKeys).after(InputSystems).after(crate::settings_ui::capture).after(crate::browser_ui::keys).run_if(shown).run_if(crate::new_game::away))
-        .add_systems(Update, (stand_back, (act, follow_browser, host_poll, draw).chain().run_if(crate::new_game::away).run_if(shown)).chain());
+        .add_systems(Update, (skin_browser, stand_back, (act, follow_browser, host_poll, draw).chain().run_if(crate::new_game::away).run_if(shown)).chain());
 }
 
 /// Where the menu reads its keys (before the game's are held back, [`MenuLayerPlugin`]).
@@ -608,6 +608,15 @@ fn stand_back(mut commands: Commands, mut front: ResMut<crate::new_game::Front>,
 fn open_join(menu: Res<Menu>, mut browser: ResMut<BrowserUi>) {
     if menu.screen == Screen::Join {
         browser.ask_open();
+    }
+}
+
+/// The browser is told whether the menu is up, so it draws as one of the menu's screens there and
+/// as the game's own panel once the menu is gone.
+fn skin_browser(layer: Option<Res<MenuLayer>>, mut browser: ResMut<BrowserUi>) {
+    let up = layer.is_none_or(|l| l.up);
+    if browser.is_over_menu() != up {
+        browser.over_menu(up);
     }
 }
 
@@ -1028,7 +1037,7 @@ fn multi(col: &mut ChildSpawnerCommands) {
 
 /// The Host screen's widths: a row's label, and what is beside it.
 const HOST_LABEL: f32 = 130.0;
-const HOST_WIDE: f32 = 640.0;
+const HOST_WIDE: f32 = WIDTH;
 
 /// A line of text to type in: its label, what is typed (or what it will be when left empty).
 fn host_field(col: &mut ChildSpawnerCommands, label: &str, text: &str, empty: &str, focused: bool, which: HostField) {

@@ -121,7 +121,8 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
             b.spawn((Text::new(label.to_uppercase()), theme::brand(size + 3.0), TextColor(ink), TextLayout::no_wrap(), Pickable::IGNORE));
         }
         if let Some(detail) = detail {
-            b.spawn((Text::new(detail.to_string()), theme::font(SMALL), TextColor(if fill == ACCENT { GROUND } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+            // (On the mustard the thin face is hard to read: the medium one there.)
+            b.spawn((Text::new(detail.to_string()), if fill == ACCENT { theme::strong(SMALL) } else { theme::font(SMALL) }, TextColor(if fill == ACCENT { GROUND } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
         }
     });
     let over = match look {
