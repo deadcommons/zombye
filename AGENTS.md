@@ -1796,7 +1796,14 @@ A new single-player game can begin with a survivor of your making in a world of 
   `front_slack_m`, 0.3 m, past either end; never beside or behind it, so a cupboard by a doorway doesn't take E from the
   door; a kind with `any_side: true`, the coffee table's drawer, opens from anywhere; keeping one open is still 2.2 m,
   any side). E takes the one faced, within 60 degrees, nearest first, else the nearest in reach; the client's E prompt
-  counts a container only when it is in the cone ahead, never because it is touching, so a door faced beside it wins. New furniture kinds `shelf` (in the
+  counts a container only when it is in the cone ahead, never because it is touching, so a door faced beside it wins.
+  The front rule is E's alone (#55): a container **named** in `Intent::Search` (the inventory screen's Nearby, the MCP
+  `search` tool) is searched from any side within `CONTAINER_REACH`, same room (`World::containers_near`), and one
+  searched already, by anyone, is taken from and put into from within reach without opening it again (`World::usable`;
+  the one open container per player is as before). Each player's `Player::nearby` (not saved, not hashed) is that list,
+  worked out every 5 ticks; the private view carries it as `PrivateView::nearby` (`NearbyView`: kind, name, room, this
+  player's search time, and the contents once searched, `None` before: an unsearched one is never filled by looking).
+  New furniture kinds `shelf` (in the
   family house's laundry) and `workbench`. A container is filled the first time anyone searches it, from its loot
   table (see Loot; a hash of seed and id, never the world RNG, so the same in any order). Opened containers are stored sparsely (`World::opened`, saved, in
   `state_hash`); a searched container stays open (and usable) to that player (`Player::open`) until it is `CONTAINER_KEEP_OPEN`
@@ -1852,6 +1859,11 @@ A new single-player game can begin with a survivor of your making in a world of 
   **Nearby** (right): the open container and the floor within reach, a pane each; "your things go here" marks the one
   a click on your things sends them to (a press on a pane's name makes it that; a newly opened container takes it);
   "Take all" and "Put mine in" / "Drop mine" at its foot move everything across (never what you hold or wear).
+  Under those two, **every other container within reach** (#55, `PrivateView::nearby`, from any side): one searched
+  already is a pane like the open one (click a thing to take it; a press on its name reopens it, quickly, so your things
+  go to it), one not yet a row with its name and a "Search (N s)" button (the real search: its time, noise and
+  Scavenging, the loot rolled only then). "Search all (N · T s)" queues the unsearched ones, nearest first, as many as
+  the job queue takes; they are cancelled like any queued job (a swing, shove or stomp drops them).
   **Nothing scrolls sideways:** things are tiles of 104 px that wrap (`Ctx::tiles`, `Ctx::tile`: the item's icon, its
   count, a mark for stale food or a worn weapon, the name cut with dots when too long), or with "View: rows" one-line
   rows (`Ctx::rows`; `--tab rows`); each column scrolls up and down by itself (`scroll_frame`, the wheel over it; the
