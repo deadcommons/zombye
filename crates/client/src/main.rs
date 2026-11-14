@@ -119,6 +119,7 @@ mod black_watch;
 mod profile;
 mod vegetation;
 mod heard;
+mod held;
 mod health_ui;
 mod help_text;
 mod hotbar;
@@ -809,7 +810,7 @@ fn main() {
         std::process::exit(1);
     }
     // How the light looks (light.ron) and where the ground cover grows (vegetation.ron).
-    if let Err(e) = daynight::load(&options.data).and_then(|_| vegetation::load_look(&options.data)).and_then(|_| meshgen::decay::load(&options.data)) {
+    if let Err(e) = daynight::load(&options.data).and_then(|_| held::load(&options.data)).and_then(|_| vegetation::load_look(&options.data)).and_then(|_| meshgen::decay::load(&options.data)) {
         eprintln!("can't use the look: {e}");
         std::process::exit(1);
     }

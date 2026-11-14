@@ -463,3 +463,40 @@ fn map_saves() {
     println!("map_walked: {:.0}% explored, {} buildings entered", seen.share() * 100.0, seen.entered.len());
     save(&w, "map_walked");
 }
+
+/// Hands busy with what they use (#35), five survivors in a row on the street by the spawn
+/// house: eating beans with a flashlight in the other hand and a bat in this one, drinking water,
+/// eating chocolate, taking a painkiller, and swapping a pistol's magazine, each part way through
+/// (`--render-to shot.png --load held_busy --zoom 8 --center X,Y`, the row printed).
+#[test]
+#[ignore]
+fn held_saves() {
+    let mut config = content::load_config(&content::default_data_dir(), 1).unwrap();
+    config.zombies = Some(0);
+    config.start_hour = 15.0;
+    config.needs = zombye_sim::NeedsTuning::off();
+    let mut w = World::new(config);
+    let at = street_near(&w, w.player_spawn, 8);
+    let ids: Vec<u32> = (0..5).map(|i| w.add_player(at + glam::Vec2::new(1.5 * i as f32, 0.0))).collect();
+    let item = |w: &World, id: &str| w.config.items.iter().position(|d| d.id == id).unwrap() as u16;
+    assert!(w.hold_item(ids[0], Slot::Hand, "baseball_bat"));
+    assert!(w.hold_item(ids[0], Slot::OffHand, "flashlight"));
+    for (&id, food) in ids.iter().zip(["tinned_beans", "water_bottle", "chocolate_bar"]) {
+        assert!(w.give_item(id, food, 1));
+        w.player_use(id, zombye_sim::Place::Carried, 0).unwrap();
+    }
+    assert!(w.give_item(ids[3], "painkillers", 1));
+    w.player_treat(ids[3], None, Treatment::Painkiller, Some(item(&w, "painkillers"))).unwrap();
+    assert!(w.hold_item(ids[4], Slot::Hand, "pistol"));
+    assert!(w.give_item(ids[4], "pistol_magazine", 1));
+    let pi = w.players.iter().position(|p| p.id == ids[4]).unwrap();
+    w.players[pi].inventory.hand.as_mut().unwrap().used = 0;
+    w.player_reload(ids[4]).unwrap();
+    step(&mut w, 10);
+    for &id in &ids {
+        let p = w.player(id).unwrap();
+        assert!(!p.jobs.is_empty(), "player {id} has finished its job already");
+    }
+    println!("row from {:.1},{:.1} to {:.1},{:.1}", at.x, at.y, at.x + 6.0, at.y);
+    save(&w, "held_busy");
+}

@@ -75,6 +75,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("servers.ron", "browser::ServerList", Part::Look, "The server browser's community list."),
     ("official_servers.ron", "browser::ServerList", Part::Look, "The server browser's official servers (shipped empty)."),
     ("keys.ron", "keys::KeysFile", Part::Look, "The game's keys: what each action is pressed with."),
+    ("held.ron", "held::Grip", Part::Look, "How items sit in a survivor's hand, by item id: the grip and how it is carried."),
     ("pad.ron", "pad::PadFile", Part::Look, "The controller's buttons: what each action is pressed with."),
 ];
 
