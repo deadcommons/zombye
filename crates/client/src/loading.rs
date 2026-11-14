@@ -151,6 +151,19 @@ pub fn wanted(o: &Options) -> bool {
     o.loading_screen || (!o.offscreen() && (o.no_menu || o.plain || o.menu_layer) && o.screenshot.is_none() && o.exit_after.is_none())
 }
 
+/// Frames the loading screen is drawn by itself before the heavy loading starts (#78): the
+/// models, the crowd, the sounds and the first chunks. Run in the first frame, as `Startup`
+/// systems they were, they held the window blank (and on a Mac the spinning wheel up) until all
+/// of it was done; now the logo is on screen first and the loading happens behind it.
+const LOAD_AFTER_FRAMES: u32 = 3;
+
+/// Run condition for the heavy loading: once the loading screen has been up for
+/// [`LOAD_AFTER_FRAMES`], or straight away when there is no loading screen (offscreen pictures,
+/// tests, runs driven by flags) or it is held for a picture.
+pub fn may_load(loading: Option<Res<Loading>>) -> bool {
+    loading.is_none_or(|l| l.hold || l.frames >= LOAD_AFTER_FRAMES)
+}
+
 /// The loading screen's state. `up` while it covers the game (fading included).
 #[derive(Resource)]
 pub struct Loading {

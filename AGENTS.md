@@ -146,7 +146,7 @@ screen asks `release_brand::title(c, Mark::Logo, width, dim)` or `image(Mark::Z,
 that says there is none: the name as text with a small TM (`text_title`), the UI's green head. Written as a mark the
 name is ZOMBYE™ (pending, not ®). **The loading screen** (`loading.rs`): the logo over the whole window from the
 game's first frame until the render world has had no shader pipeline waiting for a few frames (at least 0.7 s, at
-most 20 s), then a 0.35 s fade; in your own world time stands still behind it (`pause_menu::stop_time`). Only on a
+most 20 s), then a 0.35 s fade; in your own world time stands still behind it (`pause_menu::stop_time`). **The heavy loading waits for it** (#78, `loading::may_load`): the shared meshes and models (`world_render::setup_shared`, which the first chunks wait on), the crowd (`zombie_render::setup_zombie_assets`), the sound bank and the music run in `Update` once the screen has been drawn for `LOAD_AFTER_FRAMES` (3), not as `Startup` systems, so the window shows the logo at once instead of staying blank (on a Mac, the spinning wheel) until they are done; with no loading screen (offscreen, tests, runs driven by flags) they run in the first frame. A new load of release files at start goes behind the same condition. Only on a
 player's start (`loading::wanted`: `--no-menu`, which the main menu passes on, or a plain start, and no
 `--screenshot` / `--exit-after`), so runs driven by flags are as before. `--loading-screen` shows and holds it:
 `--render-to shot.png --hud --loading-screen`. **Loading lines:** under the logo one line at a time says something is
