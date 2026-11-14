@@ -632,6 +632,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<ItemMenu>()
             .init_resource::<HoveredItem>()
             .init_resource::<HoverCard>()
+            .init_resource::<HoverKey>()
             .init_resource::<FollowUp>()
             .init_resource::<Scrolls>()
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
@@ -639,7 +640,8 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
             .add_systems(Update, ((toggle, make_key, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain())
             .add_systems(Update, (crate::inv_windows::track.before(rebuild), crate::inv_windows::place.after(rebuild)))
-            .add_systems(Update, count_down.after(rebuild));
+            .add_systems(Update, count_down.after(rebuild))
+            .add_systems(Update, rehover.after(rebuild).before(draw_card));
     }
 }
 
@@ -2417,15 +2419,105 @@ fn row(col: &mut ChildSpawnerCommands, cells: Cells, action: RowAction, picked: 
     clickable(&mut e, action, rest);
 }
 
+/// A row or tile of a thing, as [`clickable`] made it: the stack it stands for by where it is
+/// (its place and index there), and what the pointer being on it says ([`rehover`]).
+#[derive(Component)]
+struct OfStack {
+    key: (Place, u32),
+    item: u16,
+    stack: ItemStack,
+    n: usize,
+    /// Its backing when the pointer isn't on it.
+    rest: Color,
+}
+
+/// Where the stack under the pointer is. Every change to what is shown builds the rows and tiles
+/// again, and the new one under a pointer that hasn't moved is told so by the picking only a
+/// frame or two later: without this the tile clicked lost its hover backing and its card for
+/// those frames each time, twice a move (asked, then answered), which showed as a flicker.
+#[derive(Resource, Default)]
+struct HoverKey {
+    key: Option<(Place, u32)>,
+    /// A tile [`rehover`] started hovered, and the frames it has waited for the pointer to be
+    /// found on it.
+    unproven: Option<(Entity, u8)>,
+}
+
+/// Frames a tile started hovered may wait for the picking to find the pointer on it.
+const REHOVER_FRAMES: u8 = 4;
+
+/// The row or tile built where the pointer's one was starts hovered: its backing, the hotbar's
+/// item and the card, as [`clickable`]'s own observer would set them. After a move that is the
+/// tile that took the moved one's place. One the pointer then isn't found on (it left as the
+/// screen was built again, so no leaving was told) is put back.
+#[allow(clippy::type_complexity)]
+fn rehover(
+    mut at: ResMut<HoverKey>,
+    panel: Res<InventoryPanel>,
+    map: Option<Res<bevy::picking::hover::HoverMap>>,
+    new: Query<(Entity, &OfStack), Added<OfStack>>,
+    stacks: Query<&OfStack>,
+    mut bgs: Query<&mut BackgroundColor>,
+    (mut hovered, mut card): (ResMut<HoveredItem>, ResMut<HoverCard>),
+) {
+    if !panel.open {
+        if at.key.is_some() || at.unproven.is_some() {
+            *at = HoverKey::default();
+        }
+        return;
+    }
+    if let Some(key) = at.key
+        && let Some((e, s)) = new.iter().find(|(_, s)| s.key == key)
+    {
+        if let Ok(mut bg) = bgs.get_mut(e) {
+            bg.0 = ROW_HOVER;
+        }
+        hovered.0 = Some((e, s.item));
+        card.0 = Some((e, s.stack, s.n));
+        at.unproven = Some((e, 0));
+        return;
+    }
+    // Built again with nothing where the pointer's stack was: it is on none now.
+    if at.key.is_some() && !new.is_empty() {
+        at.key = None;
+    }
+    let Some((e, frames)) = at.unproven else { return };
+    if map.as_ref().is_some_and(|m| m.values().any(|on| on.contains_key(&e))) {
+        at.unproven = None;
+    } else if frames < REHOVER_FRAMES {
+        at.unproven = Some((e, frames + 1));
+    } else {
+        // The pointer isn't there after all.
+        if let (Ok(s), Ok(mut bg)) = (stacks.get(e), bgs.get_mut(e)) {
+            bg.0 = s.rest;
+        }
+        if hovered.0.is_some_and(|(h, _)| h == e) {
+            hovered.0 = None;
+        }
+        if card.0.is_some_and(|(c, ..)| c == e) {
+            card.0 = None;
+        }
+        *at = HoverKey::default();
+    }
+}
+
 /// What makes a row (or a tile of the body view) of `action` one to press: the hover colour (back
 /// to `rest` after), the item under the pointer for the hotbar, and its presses.
 fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
     // The item under the pointer, for the hotbar's keys (not a recipe's row).
     let item = action.left.filter(|_| action.craft.is_none()).map(|_| action.stack.item);
     let (stack, n) = (action.stack, 1 + action.more.len());
-    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>| {
+    // Which stack it is by where it is, so the one built in its place starts hovered ([`rehover`]).
+    let key = action.left.filter(|_| action.craft.is_none()).map(|(from, index, _)| (from, index));
+    if let (Some(key), Some(item)) = (key, item) {
+        e.insert(OfStack { key, item, stack, n, rest });
+    }
+    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>, mut at: Option<ResMut<HoverKey>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
+        }
+        if let Some(at) = at.as_mut() {
+            at.key = key;
         }
         if let Some(h) = hovered.as_mut() {
             h.0 = item.map(|i| (ev.entity, i));
@@ -2434,9 +2526,12 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
             c.0 = item.map(|_| (ev.entity, stack, n));
         }
     })
-    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>| {
+    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>, mut at: Option<ResMut<HoverKey>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = rest;
+        }
+        if let Some(at) = at.as_mut().filter(|at| at.key.is_some() && at.key == key) {
+            at.key = None;
         }
         if let Some(h) = hovered.as_mut().filter(|h| h.0.is_some_and(|(e, _)| e == ev.entity)) {
             h.0 = None;
@@ -3531,6 +3626,31 @@ mod tests {
         click(&mut app, Vec2::new(120.0, 10.0));
         assert_eq!(app.world().resource::<Clicks>().0.len(), 1, "beside it, the row's own press");
         assert_eq!(app.world().resource::<PanelUi>().folds.len(), 1);
+    }
+
+    /// The tile built again where the pointer's was starts hovered, with the card; one the
+    /// pointer turns out not to be on is put back after a few frames.
+    #[test]
+    fn a_tile_built_again_under_the_pointer_stays_hovered() {
+        let mut app = App::new();
+        app.insert_resource(InventoryPanel { open: true }).init_resource::<HoverKey>().init_resource::<HoveredItem>().init_resource::<HoverCard>().add_systems(Update, rehover);
+        let key = (Place::Container(4), 1);
+        app.world_mut().resource_mut::<HoverKey>().key = Some(key);
+        let tile = |app: &mut App, key| app.world_mut().spawn((BackgroundColor(ROW), OfStack { key, item: 3, stack: beans(2), n: 1, rest: ROW })).id();
+        let (other, under) = (tile(&mut app, (Place::Container(4), 0)), tile(&mut app, key));
+        app.update();
+        let bg = |app: &App, e| app.world().get::<BackgroundColor>(e).unwrap().0;
+        assert_eq!(bg(&app, under), ROW_HOVER, "hovered from its first frame");
+        assert_eq!(bg(&app, other), ROW);
+        assert_eq!(app.world().resource::<HoveredItem>().0, Some((under, 3)));
+        assert!(app.world().resource::<HoverCard>().0.is_some_and(|(e, _, n)| e == under && n == 1));
+        // No picking here, so the pointer is never found on it: put back.
+        for _ in 0..=REHOVER_FRAMES + 1 {
+            app.update();
+        }
+        assert_eq!(bg(&app, under), ROW);
+        assert!(app.world().resource::<HoveredItem>().0.is_none() && app.world().resource::<HoverCard>().0.is_none());
+        assert!(app.world().resource::<HoverKey>().key.is_none());
     }
 
     /// A stack asked for is asked for once; one at a time (Alt) as many times as there are;
