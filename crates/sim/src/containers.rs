@@ -150,6 +150,9 @@ pub struct ContainerSite {
     /// A dead zombie's body (`crate::corpses`): where it lies. Its reach is measured from round that
     /// point, not from the tile `min`.
     pub body: Option<Vec2>,
+    /// The side it opens from (the furniture's `facing`), `None` for one that opens from any side
+    /// (`ContainerDef::any_side`, and bodies). See `in_front`.
+    pub front: Option<Side>,
 }
 
 impl ContainerSite {
