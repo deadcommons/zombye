@@ -10,7 +10,9 @@
 //!   crowd/*.zvat (+ textures)     the zombie crowd's outfit variants
 //! ```
 //!
-//! The folder is `$ZOMBYE_RELEASE_CHARACTERS`, else `release-characters` beside the game's binary.
+//! The folder is `$ZOMBYE_RELEASE_CHARACTERS`, else `release-characters` beside the game's binary (or in its pack), else, run from a checkout, that
+//! folder in the private art repo's checkout (`pack::art_repo`: `$ZOMBYE_ART`, else `zombye-art` beside
+//! this checkout, else `~/games/zombye-art`).
 //! `--survivor` / `ZOMBYE_SURVIVOR` and `--crowd-vat` / `ZOMBYE_CROWD_VAT` win over it (`none`
 //! included). Without it the game draws this repo's characters: anyone can build and mod it from
 //! this repo alone. An offscreen render (`--render-to`) reads it too, so pictures show the game as
@@ -23,14 +25,7 @@ use std::sync::OnceLock;
 pub fn root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let found = std::env::var_os("ZOMBYE_RELEASE_CHARACTERS")
-            .map(PathBuf::from)
-            .or_else(|| crate::pack::beside_exe("release-characters"))
-            .filter(|p| crate::pack::is_dir(p));
-        if let Some(p) = &found {
-            println!("release characters: {}", p.display());
-        }
-        found
+        crate::pack::release_dir("ZOMBYE_RELEASE_CHARACTERS", "release-characters")
     })
     .as_deref()
 }

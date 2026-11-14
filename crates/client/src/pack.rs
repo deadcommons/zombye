@@ -168,6 +168,52 @@ pub fn beside_exe(name: &str) -> Option<PathBuf> {
     zombye_net::install::beside_exe(name).or_else(|| pack().map(|p| p.mount.join(name)).filter(|p| is_dir(p)))
 }
 
+/// The release folder `name` (`release-models`, ...): `$var` if set, else beside the executable
+/// (on disk or in the pack), else, from a checkout, `name` in the private art repo's checkout
+/// ([`art_repo`]). So a developer with the art repo cloned plays with the bought art without
+/// setting anything, and anyone without it gets this repo's art. Says on stdout where it came from.
+pub fn release_dir(var: &str, name: &str) -> Option<PathBuf> {
+    let set = std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let (found, from) = match set {
+        Some(p) => (Some(p), format!("${var}")),
+        None => match beside_exe(name) {
+            Some(p) => (Some(p), "beside the game".to_string()),
+            None if zombye_net::install::packaged() => (None, String::new()),
+            None => (art_repo().map(|a| a.join(name)), "the art repo".to_string()),
+        },
+    };
+    let found = found.filter(|p| is_dir(p));
+    if let Some(p) = &found {
+        println!("{}: {} (from {from})", name.replace('-', " "), p.display());
+    }
+    found
+}
+
+/// The private art repo's checkout, for a game run from this repo's checkout: `$ZOMBYE_ART`
+/// (`none`: no art repo, to see the game as this repo alone draws it), else `zombye-art` beside
+/// this checkout, else `~/games/zombye-art` (the default the asset tools use too). Unit tests look
+/// only at `$ZOMBYE_ART`, so they test this repo's art wherever they run, as before.
+pub fn art_repo() -> Option<PathBuf> {
+    let var = std::env::var_os("ZOMBYE_ART").map(PathBuf::from);
+    if cfg!(test) && var.is_none() {
+        return None;
+    }
+    art_repo_from(
+        var,
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from),
+    )
+}
+
+fn art_repo_from(var: Option<PathBuf>, checkout_parent: PathBuf, home: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(v) = var.filter(|v| !v.as_os_str().is_empty()) {
+        return (v.as_os_str() != "none").then_some(v).filter(|v| v.is_dir());
+    }
+    std::iter::once(checkout_parent.join("zombye-art"))
+        .chain(home.map(|h| h.join("games").join("zombye-art")))
+        .find(|p| p.is_dir())
+}
+
 pub fn is_file(path: &Path) -> bool {
     path.is_file() || pack().is_some_and(|p| p.is_file(path))
 }
@@ -284,6 +330,28 @@ pub fn write_from_args(args: &[String]) -> ! {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_art_repo_is_found_beside_the_checkout_or_in_games() {
+        let root = std::env::temp_dir().join(format!("zombye-art-find-{}", std::process::id()));
+        let (side, home) = (root.join("code"), root.join("home"));
+        let games = home.join("games").join("zombye-art");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(&side).unwrap();
+        // Nothing beside the checkout: the one in ~/games.
+        assert_eq!(art_repo_from(None, side.clone(), Some(home.clone())), Some(games.clone()));
+        // One beside the checkout wins.
+        std::fs::create_dir_all(side.join("zombye-art")).unwrap();
+        assert_eq!(art_repo_from(None, side.clone(), Some(home.clone())), Some(side.join("zombye-art")));
+        // $ZOMBYE_ART wins over both, and `none` turns it off.
+        assert_eq!(art_repo_from(Some(games.clone()), side.clone(), Some(home.clone())), Some(games.clone()));
+        assert_eq!(art_repo_from(Some("none".into()), side.clone(), Some(home.clone())), None);
+        // A $ZOMBYE_ART that isn't there is nothing, not a guess elsewhere.
+        assert_eq!(art_repo_from(Some(root.join("gone")), side.clone(), Some(home.clone())), None);
+        // Neither there: none.
+        assert_eq!(art_repo_from(None, root.join("elsewhere"), Some(root.join("nobody"))), None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     use super::*;
 
     #[test]

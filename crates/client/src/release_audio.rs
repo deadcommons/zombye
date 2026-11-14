@@ -10,7 +10,9 @@
 //!   data/music.ron                   optional: the same for music.ron
 //! ```
 //!
-//! The folder is `$ZOMBYE_RELEASE_AUDIO`, else `release-audio` beside the game's binary. Without
+//! The folder is `$ZOMBYE_RELEASE_AUDIO`, else `release-audio` beside the game's binary (or in its pack), else, run from a checkout, that
+//! folder in the private art repo's checkout (`pack::art_repo`: `$ZOMBYE_ART`, else `zombye-art` beside
+//! this checkout, else `~/games/zombye-art`). Without
 //! one the game plays the public files: anyone can build and mod it from this repo alone.
 
 use std::path::{Path, PathBuf};
@@ -20,14 +22,7 @@ use std::sync::OnceLock;
 pub fn root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let found = std::env::var_os("ZOMBYE_RELEASE_AUDIO")
-            .map(PathBuf::from)
-            .or_else(|| crate::pack::beside_exe("release-audio"))
-            .filter(|p| crate::pack::is_dir(p));
-        if let Some(p) = &found {
-            println!("release audio: {}", p.display());
-        }
-        found
+        crate::pack::release_dir("ZOMBYE_RELEASE_AUDIO", "release-audio")
     })
     .as_deref()
 }

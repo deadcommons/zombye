@@ -13,7 +13,9 @@
 //!   icon.png        the window's icon (Windows and Linux; a Mac shows its app's own)
 //! ```
 //!
-//! The folder is `$ZOMBYE_RELEASE_BRAND`, else `release-brand` beside the game's binary. Without
+//! The folder is `$ZOMBYE_RELEASE_BRAND`, else `release-brand` beside the game's binary (or in its pack), else, run from a checkout, that
+//! folder in the private art repo's checkout (`pack::art_repo`: `$ZOMBYE_ART`, else `zombye-art` beside
+//! this checkout, else `~/games/zombye-art`). Without
 //! one, or without a file, the game shows what this repo can: the name as plain text, the UI's
 //! own green mark, no window icon. Anyone can build and mod the game from this repo alone; a fork
 //! that is published needs a name and logo of its own.
@@ -81,14 +83,7 @@ static LOADED: OnceLock<[Option<Vec2>; 4]> = OnceLock::new();
 pub fn root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let found = std::env::var_os("ZOMBYE_RELEASE_BRAND")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent().map(|d| d.join("release-brand")))
-            .filter(|p| p.is_dir());
-        if let Some(p) = &found {
-            println!("release brand: {}", p.display());
-        }
-        found
+        crate::pack::release_dir("ZOMBYE_RELEASE_BRAND", "release-brand")
     })
     .as_deref()
 }

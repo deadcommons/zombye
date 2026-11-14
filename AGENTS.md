@@ -112,7 +112,12 @@ and the rest. Change a building number in the code, change it there too.
 **Release models** (`release_models.rs`): models from bought asset packs, whose licence allows them only embedded
 in a game, are never in this repo. They live in the art repo's `release-models/` and release builds carry that
 folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models` beside its binary (stdout says what was
-read). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
+read). **Every release folder (models, characters, animation, audio, brand) is found the same way** (`pack::release_dir`):
+its `$ZOMBYE_RELEASE_*` variable, else beside the binary or in its pack, else, run from a checkout, that folder in
+the private art repo's checkout (`pack::art_repo`: `$ZOMBYE_ART`, else `zombye-art` beside this checkout, else
+`~/games/zombye-art`, the asset tools' default), so a developer with the art repo cloned plays with the bought art
+without setting anything and anyone without it gets this repo's art; `ZOMBYE_ART=none` shows the game as this repo
+alone draws it. Stdout says where each came from (`release models: ... (from the art repo)`). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
 they replace; a street prop kind this repo has no model for is a grey-box without them) replace the game's of the
 same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
 `bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
