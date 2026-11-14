@@ -1,24 +1,34 @@
 // How items sit in a survivor's hand (read by the client: crates/client/src/held.rs).
 //
-// Anything held is drawn in the hand's grip frame: the grip at the origin, on the palm (4 cm out
-// of the hand's middle, so a handle lies on the palm's skin, not through the hand); the item
-// pointing along +Z, out past the thumb; its top +Y, toward the wrist; so +X is out of the right
-// palm, and for the left hand out of its back. A gun is the same turned a quarter: its barrel on
-// the way the fingers point, its top to the thumb. The hand is turned to hold it that way
-// (`survivor_model::Hand`). A held model is made that way; an item with only a ground model, or
-// none, is laid along +Z and centred on the grip. A grip here then moves the item
-// in that frame (`offset`, metres), turns it (`turn`, degrees about X, then Y, then Z) and scales
-// it (`scale`), so an item that sits wrong is put right without code. Every field is optional.
+// Anything held is drawn in the hand's grip frame, which is fixed on the hand (the thing follows
+// the hand, and the hand closes round it): the grip at the origin, on the palm (4 cm out of the
+// hand's middle, where the closed fingers go round it); the item pointing along +Z, out past the
+// thumb; its top +Y, toward the wrist; so +X is out of the right palm, and for the left hand out
+// of its back. Three ways of holding (`survivor_model::Hold`):
+//   - a handle (a weapon that isn't a gun, anything with a held model), in a hammer grip: at rest
+//     +Z runs across the palm, 45 degrees off the knuckles' line toward the fingers, so it points
+//     forward and down from a hanging hand; along the knuckles while a guard or a blow has the arm;
+//   - a gun: its barrel (+Z) on the way the fingers point, its top (+Y) to the thumb;
+//   - a small thing in the fist (everything else): +Z along the knuckles' line. A thing that stands
+//     (a mug, a tin, a bottle) is put upright in the fist, its top to +Z; a flat one along +Z, flat
+//     on the palm; either with its middle on the grip, as far out of the palm as it is thick.
+// A held model is made that way. A grip here then moves the item in that frame (`offset`, metres),
+// turns it (`turn`, degrees about X, then Y, then Z) and scales it (`scale`), so an item that sits
+// wrong is put right without code. Every field is optional.
 //
 // A release build's models have grips of their own (release-models/held/grips.ron), read over
 // these, since a grip belongs to the model it fits.
 //
 //   "kitchen_knife": (offset: (0.0, 0.0, -0.02), turn: (0.0, 0.0, 90.0), scale: 1.0),
 //
-// Food being eaten with no entry here is moved out of the face by `held::EATING`; an entry
-// replaces that (these two were tuned against the eating clip, which lays the left palm on the
-// mouth: on the palm the food is inside the head, so it is drawn on the back of the hand, +X).
+// Two entries are not items: "eating" and "drinking" are put on top of the grip of the food or
+// drink in use, in the left hand's frame (+X out of the back of that hand), while the clip has the
+// fist at the face: they bring the thing to the lips.
 {
-    "tinned_beans": (offset: (0.12, 0.0, 0.0), scale: 1.3),
-    "chocolate_bar": (offset: (0.12, 0.0, -0.04), scale: 1.3),
+    // The eating clip lays the fist on the mouth: the food a little out of the back of the hand,
+    // in front of the face, not in it.
+    "eating": (offset: (0.055, 0.0, -0.015)),
+    // The drinking clip tips the fist at the mouth, thumb to the face: the bottle's top at the lips,
+    // not inside the head.
+    "drinking": (offset: (0.0, 0.0, -0.05)),
 }

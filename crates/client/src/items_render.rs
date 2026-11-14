@@ -10,6 +10,7 @@ use zombye_sim::ItemStack;
 
 use crate::fog::FogState;
 use crate::server_link::{JoinInfo, ServerLink};
+use crate::survivor_model::{Hold, PALM, SKIN};
 
 /// How items look on the ground and in the hand: one unit cube, a material and size per item, the
 /// release models where there are any, and each item's look in a hand (#35).
@@ -25,9 +26,51 @@ pub struct WeaponLooks {
     item_logs: Vec<bool>,
     log: Handle<Mesh>,
     model_material: Handle<StandardMaterial>,
-    /// How each item (by index) is drawn in a hand: its mesh, material and place in the grip frame,
-    /// the item's grip from `held.ron` applied; `None` for bags (the outfit draws those) and bare hands.
-    hand_looks: Vec<Option<(Handle<Mesh>, Handle<StandardMaterial>, Transform)>>,
+    /// How each item (by index) is drawn in a hand; `None` for bags (the outfit draws those) and
+    /// bare hands.
+    hand_looks: Vec<Option<HandLook>>,
+}
+
+/// How an item is drawn in a hand (#35): its mesh and material, how the hand holds it, its place
+/// in that grip frame (the item's grip from `held.ron` applied), how far out of the palm from the
+/// grip it sits (`out`, metres: a thick thing's middle is further off the palm's skin than a
+/// handle's, a flat one's nearer) and how far the hand closes round it (`closed`: 1 round a thin
+/// handle, less round a mug).
+#[derive(Clone)]
+pub struct HandLook {
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<StandardMaterial>,
+    pub hold: Hold,
+    pub place: Transform,
+    pub out: f32,
+    pub closed: f32,
+}
+
+impl HandLook {
+    /// A handle or a gun: on the grip, the hand shut round it.
+    fn gripped(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, hold: Hold, place: Transform) -> Self {
+        Self { mesh, material, hold, place, out: 0.0, closed: 1.0 }
+    }
+
+    /// A small thing in the fist.
+    fn in_fist(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, id: &str, (place, thick, girth): (Transform, f32, f32)) -> Self {
+        let grip = crate::held::grip(id);
+        let (thick, girth) = (thick * grip.scale, girth * grip.scale);
+        Self { mesh, material, hold: Hold::Fist, place: gripped(id, place), out: (SKIN + thick * 0.5 - PALM).max(-0.02), closed: closed_round(girth) }
+    }
+
+    /// Where it is drawn in hand `hand`'s grip frame (0 right, 1 left): `out` of the palm, which
+    /// is +X in the right hand's frame and -X in the left's.
+    pub fn place_in(&self, hand: u8) -> Transform {
+        let out = Vec3::X * if hand == 0 { self.out } else { -self.out };
+        Transform::from_matrix(Mat4::from_translation(out) * self.place.to_matrix())
+    }
+}
+
+/// How far a hand closes round something `girth` metres across (the wider way, across the
+/// fingers): shut round a handle, about half open round a mug.
+fn closed_round(girth: f32) -> f32 {
+    1.0 - 0.5 * ((girth - 0.035) / 0.055).clamp(0.0, 1.0)
 }
 
 /// Bar thickness and the shortest bar drawn (so a frying pan still shows up).
@@ -37,10 +80,10 @@ const MIN_LENGTH: f32 = 0.2;
 impl WeaponLooks {
     /// How item `item` (an index) is drawn in a hand, in the hand's grip frame (the grip at the
     /// origin, pointing along +Z, its top +Y): its held model; else, a weapon, its bar; else its
-    /// ground model laid along +Z in the fist; else a box of its size. `None` for a bag (the outfit
+    /// ground model in the fist ([`into_fist`]); else a box of its size. `None` for a bag (the outfit
     /// hangs those from the hand) or anything not drawn.
-    pub fn in_hand(&self, item: u16) -> Option<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> {
-        self.hand_looks.get(item as usize)?.clone()
+    pub fn in_hand(&self, item: u16) -> Option<&HandLook> {
+        self.hand_looks.get(item as usize)?.as_ref()
     }
 }
 
@@ -56,14 +99,28 @@ fn bounds(mesh: &Mesh) -> Option<(Vec3, Vec3)> {
     (lo.x <= hi.x).then_some((lo, hi))
 }
 
-/// Something lying on the ground (`lo`..`hi`, its top +Y) put in the fist: its longer side along
-/// the hand's +Z, its middle in the grip.
-fn into_fist(lo: Vec3, hi: Vec3) -> Transform {
+/// Something as it lies on the ground (`lo`..`hi`, its top +Y) put in the fist, its middle on
+/// the grip: a thing that stands (a mug, a tin, a bottle: about as tall as it is wide, or taller)
+/// upright in the fist, its top out past the thumb (+Z), the hand round its side; anything else
+/// (a bar of chocolate, a box) with its long side along the fist and its flat side on the palm.
+/// Returns its place in the grip frame, how thick it is out of the palm and how far it is across
+/// the fingers (metres).
+fn into_fist(lo: Vec3, hi: Vec3) -> (Transform, f32, f32) {
+    use std::f32::consts::FRAC_PI_2;
     let size = hi - lo;
-    // Turn the longer of x and z to +Z (a quarter turn about Y takes +X to +Z).
-    let turn = if size.x > size.z { Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2) } else { Quat::IDENTITY };
+    let (turn, thick, girth) = if size.y >= 0.75 * size.x.max(size.z) {
+        // Its top (+Y) to +Z; its narrower side out of the palm (+X).
+        let narrow = if size.z < size.x { Quat::from_rotation_y(FRAC_PI_2) } else { Quat::IDENTITY };
+        (Quat::from_rotation_x(FRAC_PI_2) * narrow, size.x.min(size.z), size.x.max(size.z))
+    } else {
+        // The longer of x and z to +Z (a quarter turn about Y takes +X to +Z), then the thinner
+        // of the other two out of the palm (a quarter turn about Z takes +Y to +X).
+        let (long, across) = if size.x > size.z { (Quat::from_rotation_y(-FRAC_PI_2), size.z) } else { (Quat::IDENTITY, size.x) };
+        let flat = if size.y < across { Quat::from_rotation_z(-FRAC_PI_2) } else { Quat::IDENTITY };
+        (flat * long, size.y.min(across), size.y.max(across))
+    };
     let mid = turn * ((lo + hi) * 0.5);
-    Transform::from_translation(-mid).with_rotation(turn)
+    (Transform::from_translation(-mid).with_rotation(turn), thick, girth)
 }
 
 /// A grip (from `held.ron`) put on top of where an item already sits in the hand.
@@ -122,10 +179,13 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
             if d.bag.is_some() {
                 return None;
             }
-            if let Some(m) = in_hand.mesh(&d.id) {
-                return Some((meshes.add(m), model_material.clone(), gripped(&d.id, Transform::IDENTITY)));
-            }
             let weapon = d.weapon.as_ref().and_then(|id| join.weapons.iter().position(|w| &w.id == id));
+            // A gun by its grip, the barrel along the fingers; any other weapon, or a thing made
+            // to be held, by its handle.
+            let hold = if weapon.is_some_and(|w| join.weapons[w].ranged.is_some()) { Hold::Gun } else { Hold::Handle };
+            if let Some(m) = in_hand.mesh(&d.id) {
+                return Some(HandLook::gripped(meshes.add(m), model_material.clone(), hold, gripped(&d.id, Transform::IDENTITY)));
+            }
             if let Some(w) = weapon {
                 let len = lengths[w];
                 if len <= 0.0 {
@@ -134,16 +194,16 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
                 let len = len.max(MIN_LENGTH);
                 // The handle sticks out a little behind the fist.
                 let bar = Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len));
-                return Some((cube.clone(), weapon_mats[w].clone(), gripped(&d.id, bar)));
+                return Some(HandLook::gripped(cube.clone(), weapon_mats[w].clone(), hold, gripped(&d.id, bar)));
             }
             if let Some(m) = released.mesh(&d.id) {
-                let place = bounds(&m).map_or(Transform::IDENTITY, |(lo, hi)| into_fist(lo, hi));
-                return Some((meshes.add(m), model_material.clone(), gripped(&d.id, place)));
+                let fist = bounds(&m).map_or((Transform::IDENTITY, 0.0, 0.0), |(lo, hi)| into_fist(lo, hi));
+                return Some(HandLook::in_fist(meshes.add(m), model_material.clone(), &d.id, fist));
             }
-            // A box of its size, in the fist, held as it would lie (its long side along the hand).
+            // A box of its size, in the fist.
             let s: Vec3 = item_sizes_for_hand[i];
-            let place = into_fist(-s * 0.5, s * 0.5);
-            Some((cube.clone(), item_materials_for_hand[i].clone(), gripped(&d.id, place.with_scale(place.scale * s))))
+            let (place, thick, girth) = into_fist(-s * 0.5, s * 0.5);
+            Some(HandLook::in_fist(cube.clone(), item_materials_for_hand[i].clone(), &d.id, (place.with_scale(place.scale * s), thick, girth)))
         })
         .collect();
     commands.insert_resource(WeaponLooks { cube, item_materials, item_sizes, item_models, item_logs, log, model_material, hand_looks });
@@ -199,5 +259,38 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, map: Res<crate::ser
                 entities.0.insert(it.id, (e, it.stack));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thing that stands is held upright in the fist, its top out past the thumb (+Z) and its
+    /// middle on the grip; a flat thing lies along the fist, its flat side on the palm (#35).
+    #[test]
+    fn small_things_sit_in_the_fist() {
+        // A tin: 8 cm across, 11 tall, standing on the ground.
+        let (place, thick, girth) = into_fist(Vec3::new(-0.04, 0.0, -0.04), Vec3::new(0.04, 0.11, 0.04));
+        assert!((place.transform_point(Vec3::new(0.0, 0.11, 0.0)) - Vec3::new(0.0, 0.0, 0.055)).length() < 1e-5, "its top is out past the thumb");
+        assert!((place.transform_point(Vec3::new(0.0, 0.055, 0.0))).length() < 1e-5, "its middle is on the grip");
+        assert!((thick - 0.08).abs() < 1e-5 && (girth - 0.08).abs() < 1e-5);
+        // A mug with its handle out along z: still upright, its narrower side out of the palm (+X).
+        let (place, thick, girth) = into_fist(Vec3::new(-0.04, 0.0, -0.04), Vec3::new(0.04, 0.09, 0.07));
+        assert!(place.transform_point(Vec3::new(0.0, 0.09, 0.015)).z > 0.04, "the mug's top is out past the thumb");
+        assert!((place.rotation * Vec3::X).x.abs() > 0.99 && (thick - 0.08).abs() < 1e-5 && (girth - 0.11).abs() < 1e-5);
+        // A bar of chocolate lying flat, its length along x: along the fist, flat on the palm.
+        let (place, thick, girth) = into_fist(Vec3::new(-0.08, 0.0, -0.03), Vec3::new(0.08, 0.01, 0.03));
+        assert!((place.rotation * Vec3::X).z.abs() > 0.99, "its length runs along the fist");
+        assert!((place.rotation * Vec3::Y).x.abs() > 0.99, "its flat side is on the palm");
+        assert!((thick - 0.01).abs() < 1e-5 && (girth - 0.06).abs() < 1e-5);
+    }
+
+    /// The hand shuts round a handle and stays half open round a mug.
+    #[test]
+    fn the_hand_closes_by_what_it_holds() {
+        assert_eq!(closed_round(0.03), 1.0);
+        assert_eq!(closed_round(0.09), 0.5);
+        assert!(closed_round(0.06) < closed_round(0.045) && closed_round(0.2) == 0.5);
     }
 }

@@ -93,15 +93,11 @@ pub fn grip(id: &str) -> Grip {
     GRIPS.get_or_init(shipped).get(id).copied().unwrap_or_default()
 }
 
-/// Whether the grips name item `id`.
-pub fn has(id: &str) -> bool {
-    GRIPS.get_or_init(shipped).contains_key(id)
-}
-
-/// Food being eaten without a grip of its own: on the back of the left hand, in front of the mouth
-/// rather than in the face (the eating clip lays the palm on the mouth), and a little bigger so it
-/// reads (tuned on the tin of beans, #35).
-pub const EATING: Grip = Grip { offset: (0.12, 0.0, -0.02), turn: (0.0, 0.0, 0.0), scale: 1.3 };
+/// The grips (not items) put on top of the thing in use at the mouth, in the left hand's frame:
+/// food being eaten and a drink being drunk. The clips raise the fist to the face; these move what
+/// is in it to the lips (#35).
+pub const EATING: &str = "eating";
+pub const DRINKING: &str = "drinking";
 
 #[cfg(test)]
 mod tests {

@@ -34,7 +34,7 @@ use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
 use crate::rig::{Bone, Pose, box_faces, mix, rx, ry, rz, skin_matrices, smooth};
 use crate::server_link::{ClientMap, CombatEventsThisFrame, JoinInfo, ServerLink};
-use crate::survivor_model::SurvivorModel;
+use crate::survivor_model::{Grasp, Hold, SurvivorModel};
 
 pub(crate) const N: usize = 12;
 pub(crate) type SPose = Pose<N>;
@@ -212,6 +212,18 @@ pub struct HeldItem {
     pub(crate) hand: u8,
 }
 
+/// How far a held thing is turned down in the grey-box's hand at rest (radians about X): forward
+/// and down about 25 degrees from the hanging arm. Level with the hand, it lined up with the
+/// camera's line of sight and hid end-on behind the fist of a survivor facing the camera (#35).
+/// The thing's turn in the grip, not the wrist's: the hand stays straight on the forearm.
+const GREY_CARRY: f32 = 1.25;
+
+/// The grey-box's grip frame on its right hand: in the fist, turned down by [`GREY_CARRY`] at rest
+/// and along the hand while a guard or a blow has the arm (`clip_w` 1: those poses turn the hand).
+fn grey_grip(clip_w: f32) -> Transform {
+    Transform::from_xyz(0.0, -0.07, 0.0).with_rotation(Quat::from_rotation_x(GREY_CARRY * (1.0 - clip_w.clamp(0.0, 1.0))))
+}
+
 /// Build a survivor's joints, skinned body and held weapon under `root` (which carries the
 /// position and facing): the modular character when there is one, else the grey-box. `local` picks
 /// the local player's look.
@@ -230,9 +242,9 @@ pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&S
         let parent_entity = parent.map_or(root, |pa| joints[pa]);
         joints[b] = commands.spawn((Transform::from_translation(local_pivot), Visibility::Inherited, ChildOf(parent_entity))).id();
     }
-    // The grip sits in the fist; the bar points along the hand's +Z (forward when the arm hangs).
-    // The grey-box has a right hand only, so whatever is in the off hand isn't drawn on it.
-    commands.spawn((HeldItem { player, hand: 0 }, Transform::from_xyz(0.0, -0.07, 0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
+    // The grip sits in the fist; the bar points along the hand's +Z, turned down in a hand at rest
+    // (`grey_grip`). The grey-box has a right hand only, so what is in the off hand isn't drawn on it.
+    commands.spawn((HeldItem { player, hand: 0 }, grey_grip(0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
     let body = commands
         .spawn((
             Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
@@ -375,7 +387,18 @@ pub struct SurvivorAnim {
     /// the seat by `player::sit_on_seat`).
     pub(crate) seat: Option<zombye_sim::SeatKind>,
     pub(crate) sit_w: f32,
+    /// How much each hand (right, left) has taken up what it holds, and how far it is closed
+    /// round it (#35): eased to 1 and to the thing's `HandLook::closed` over [`CLOSE_SECS`], and
+    /// back to an open, empty hand when it lets go. `None` until the first frame, which starts as
+    /// it is.
+    pub(crate) hands: Option<[(f32, f32); 2]>,
+    /// How much a weapon's clip has the right arm (a guard while aiming, a blow, a reload): 0 at
+    /// rest, where the arm hangs and a handle points forward and down from the fist.
+    pub(crate) clip_w: f32,
 }
+
+/// How long a hand takes to close round a thing or open again (seconds).
+const CLOSE_SECS: f32 = 0.15;
 
 /// Metres over the ground a stair loop (two steps) covers: what the clip it was made from rose in
 /// a loop (0.92 m), a flight rising a metre a metre, so a planted foot stays where it was put.
@@ -478,6 +501,8 @@ impl SurvivorAnim {
             struggling: false,
             seat: None,
             sit_w: 0.0,
+            hands: None,
+            clip_w: 0.0,
         }
     }
 }
@@ -505,6 +530,7 @@ fn animate_survivors(
     map: Res<ClientMap>,
     events: Res<CombatEventsThisFrame>,
     model: Option<Res<SurvivorModel>>,
+    looks: Option<Res<WeaponLooks>>,
     options: Res<crate::Options>,
     mut survivors: Query<(&mut SurvivorAnim, &Transform)>,
     mut joints: Query<&mut Transform, Without<SurvivorAnim>>,
@@ -715,6 +741,22 @@ fn animate_survivors(
         }
         let category = join.weapons.get(view.weapon.map_or(usize::MAX, |w| w as usize)).map_or(WeaponCategory::Unarmed, |w| w.category);
         let armed = view.weapon.is_some();
+        // What each hand holds (#35): the hand takes it up and closes round it, and opens again
+        // when it is empty, at a steady rate (the whole way in `CLOSE_SECS`).
+        let held = [0, 1].map(|hand| holding(&link, &join, a.player, hand).and_then(|(item, _)| looks.as_ref()?.in_hand(item)));
+        let reloading = if a.task == Some(Task::Reload) { a.task_w } else { 0.0 };
+        a.clip_w = if armed { a.aim_w.max(action_clock(a, now).map_or(0.0, |(.., w)| w)).max(reloading) } else { 0.0 };
+        let mut want = held.map(|h| h.map_or((0.0, 0.0), |h| (1.0, h.closed)));
+        // A two-handed weapon at the ready or in a blow: the free hand shuts on it too.
+        if armed && style(category) == Style::TwoHand && held[1].is_none() {
+            want[1].1 = a.clip_w;
+        }
+        let step = dt / CLOSE_SECS;
+        let hands = match a.hands {
+            Some(now) if options.pose.is_none() => [0, 1].map(|k| (now[k].0 + (want[k].0 - now[k].0).clamp(-step, step), now[k].1 + (want[k].1 - now[k].1).clamp(-step, step))),
+            _ => want,
+        };
+        a.hands = Some(hands);
         match &a.look {
             Look::Grey(js) => {
                 let pose = compose(a, now, style(category), armed);
@@ -732,8 +774,9 @@ fn animate_survivors(
             Look::Model(js) => {
                 let Some(model) = &model else { continue };
                 let mut pose = model.compose(a, now, category, armed);
-                // Each hand turned to hold what is drawn in it (#35).
-                model.hold(&mut pose, [0, 1].map(|hand| holding(&link, &join, a.player, hand).map(|(_, _, hold)| hold)));
+                // The hands set straight for what is drawn in them and closed round it (#35).
+                let grasp = |k: usize| Grasp { hold: held[k].map_or(Hold::Fist, |h| h.hold), clip_w: if k == 0 { a.clip_w } else { 0.0 }, held: hands[k].0, closed: hands[k].1 };
+                model.hold(&mut pose, [grasp(0), grasp(1)]);
                 for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
@@ -1139,9 +1182,7 @@ fn carry(p: &mut SPose, armed: bool, swing: f32) {
     if armed {
         p.rot[UARM_R] = rx(-0.2 - 0.1 * swing) * rz(-0.08);
         p.rot[FARM_R] = rx(-0.55);
-        // Forward and down about 25 degrees at rest: tilted up, it lined up with the camera's
-        // line of sight and hid end-on behind the fist of a survivor facing the camera (#35).
-        p.rot[HAND_R] = rx(1.25);
+        // The hand straight on the forearm: what it holds is turned in the grip (`grey_grip`).
     } else {
         p.rot[UARM_R] = rx(-0.38 * swing) * rz(-0.1);
         p.rot[FARM_R] = rx(-0.3);
@@ -1387,20 +1428,18 @@ fn busy_with(link: &ServerLink, join: &JoinInfo, player: u32) -> Option<u16> {
     }
 }
 
-/// What is drawn in hand `hand` (0 right, 1 left) of survivor `player` now: the item, whether it is
-/// the thing in use (`busy_with`, the left hand's) and how the hand holds it. Not a bag, which hangs
-/// from the hand (the outfit draws those).
-fn holding(link: &ServerLink, join: &JoinInfo, player: u32, hand: u8) -> Option<(u16, bool, crate::survivor_model::Hold)> {
-    use crate::survivor_model::Hold;
+/// What is drawn in hand `hand` (0 right, 1 left) of survivor `player` now: the item, and whether
+/// it is the thing in use (`busy_with`, the left hand's). Not a bag, which hangs from the hand (the
+/// outfit draws those).
+fn holding(link: &ServerLink, join: &JoinInfo, player: u32, hand: u8) -> Option<(u16, bool)> {
     let busy = if hand == 1 { busy_with(link, join, player) } else { None };
     let item = busy.or_else(|| {
         link.curr.players.iter().find(|p| p.id == player && !p.dead)?;
         let outfit = link.curr.outfits.iter().find(|o| o.id == player)?;
         if hand == 0 { outfit.hand } else { outfit.off_hand }
     })?;
-    let def = join.items.get(item as usize).filter(|d| d.bag.is_none())?;
-    let gun = def.weapon.as_ref().and_then(|id| join.weapons.iter().find(|w| &w.id == id)).is_some_and(|w| w.ranged.is_some());
-    Some((item, busy.is_some(), if gun { Hold::Gun } else { Hold::Handle }))
+    join.items.get(item as usize).filter(|d| d.bag.is_none())?;
+    Some((item, busy.is_some()))
 }
 
 /// Show what each survivor holds in either hand (from snapshots; while eating, drinking, taking a
@@ -1411,32 +1450,41 @@ fn show_held_items(
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
     model: Option<Res<SurvivorModel>>,
+    anims: Query<&SurvivorAnim>,
     mut held: Query<(Entity, &HeldItem, &mut Transform, &mut Visibility, Option<&Children>)>,
     mut shapes: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldItem>>,
 ) {
     let Some(looks) = looks else { return };
     for (e, h, mut frame, mut vis, children) in &mut held {
         let holding = holding(&link, &join, h.player, h.hand);
-        let busy = holding.and_then(|(item, busy, _)| busy.then_some(item));
-        let look = holding.and_then(|(item, ..)| looks.in_hand(item));
-        // On the grip frame for the way the hand holds it (the body's; the grey-box has the one).
-        if let (Some(model), Some((.., hold))) = (&model, holding) {
-            let grip = model.grip_frame(h.hand as usize, hold);
-            if *frame != grip {
-                *frame = grip;
-            }
+        let busy = holding.and_then(|(item, busy)| busy.then_some(item));
+        let look = holding.and_then(|(item, _)| looks.in_hand(item));
+        // On the grip frame for the way the hand holds it: the body's; the grey-box has the one,
+        // turned down at rest.
+        let clip_w = if h.hand == 0 { anims.iter().find(|a| a.player == h.player).map_or(0.0, |a| a.clip_w) } else { 0.0 };
+        let grip = match (&model, look) {
+            (Some(model), Some(look)) => Some(model.grip_frame(h.hand as usize, look.hold, clip_w)),
+            (None, Some(_)) => Some(grey_grip(clip_w)),
+            _ => None,
+        };
+        if let Some(grip) = grip.filter(|g| *frame != *g) {
+            *frame = grip;
         }
         let want = if look.is_some() { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
-        let Some((mesh, material, mut place)) = look else { continue };
-        // Food at the mouth sits in front of it (`held::EATING`), unless its grip says otherwise.
-        if let Some(def) = busy.and_then(|i| join.items.get(i as usize))
-            && def.category == ItemCategory::Food
-            && !crate::held::has(&def.id)
-        {
-            place = Transform::from_matrix(crate::held::EATING.transform().to_matrix() * place.to_matrix());
+        let Some(look) = look else { continue };
+        let (mesh, material, mut place) = (look.mesh.clone(), look.material.clone(), look.place_in(h.hand));
+        // The thing at the mouth, eaten or drunk: its grip for that on top (`held.ron`'s `eating`
+        // and `drinking`), to put it at the lips of the clip's raised hand.
+        let at_mouth = busy.and_then(|i| join.items.get(i as usize)).and_then(|def| match def.category {
+            ItemCategory::Food => Some(crate::held::EATING),
+            ItemCategory::Drink => Some(crate::held::DRINKING),
+            _ => None,
+        });
+        if let Some(use_grip) = at_mouth {
+            place = Transform::from_matrix(crate::held::grip(use_grip).transform().to_matrix() * place.to_matrix());
         }
         match children.and_then(|c| c.first().copied()) {
             Some(child) => {
