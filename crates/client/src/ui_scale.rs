@@ -124,6 +124,10 @@ pub struct ClientSettings {
     /// The window's size when it isn't full screen, in UI pixels, as the player last left it
     /// (`window_mode.rs`; `None`: 1600 x 900). Never used with `--size`.
     pub window_size: Option<(u32, u32)>,
+    /// The 3D resolution in full screen, as a share of the screen's pixels each way
+    /// (`render_scale.rs`; the Display tab's Resolution list). `None`: Auto, a size the GPU keeps
+    /// smooth on this screen.
+    pub fullscreen_scale: Option<f32>,
     /// Frames wait for the screen's refresh (`--novsync` turns it off for a session).
     pub vsync: bool,
     /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
@@ -174,6 +178,7 @@ impl Default for ClientSettings {
             fullscreen: default_fullscreen(),
             fullscreen_chosen: false,
             window_size: None,
+            fullscreen_scale: None,
             vsync: true,
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,

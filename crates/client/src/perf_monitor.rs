@@ -2,7 +2,7 @@
 //! for a session): a small read-out in the top right corner of the game, for players and
 //! playtesters as well as developers, so it is shown in a packaged game too. `Fps` is the frame
 //! rate; `Full` adds the frame time over the last second (mean and worst), the slowest 1% of frames
-//! as a frame rate, the graphics preset and the 3D resolution. Measured on the CPU, from the time
+//! as a frame rate, the graphics preset and the size the 3D world is drawn at (`render_scale.rs`). Measured on the CPU, from the time
 //! between frames (`Time<Real>`), so it is what the player sees, vsync's waits included.
 
 use bevy::prelude::*;
@@ -91,13 +91,13 @@ pub fn summarise(times: &[f32]) -> Option<Second> {
 }
 
 /// The read-out's text for `mode`.
-pub fn line(mode: PerfMonitor, s: Second, preset: &str, scale_pct: f32) -> String {
+pub fn line(mode: PerfMonitor, s: Second, preset: &str, size: UVec2, scale: f32) -> String {
     match mode {
         PerfMonitor::Off => String::new(),
         PerfMonitor::Fps => format!("{:.0} FPS", s.fps),
         PerfMonitor::Full => format!(
-            "{:.0} FPS  ·  {:.1} ms (worst {:.1})  ·  1% low {:.0} FPS\n{preset}  ·  3D {scale_pct:.0}%",
-            s.fps, s.mean_ms, s.worst_ms, s.low_fps
+            "{:.0} FPS  ·  {:.1} ms (worst {:.1})  ·  1% low {:.0} FPS\n{preset}  ·  3D {} x {} ({:.0}%)",
+            s.fps, s.mean_ms, s.worst_ms, s.low_fps, size.x, size.y, scale * 100.0
         ),
     }
 }
@@ -121,6 +121,7 @@ fn update(
     mut frames: ResMut<Frames>,
     store: Option<Res<SettingsStore>>,
     over: Option<Res<PerfOverride>>,
+    scale: Option<Res<crate::render_scale::ScaleNow>>,
     mut text: Query<(&mut Text, &mut Visibility), With<PerfText>>,
 ) {
     let mode = over.map(|o| o.0).or_else(|| store.as_ref().map(|s| s.settings.perf_monitor)).unwrap_or_default();
@@ -142,7 +143,8 @@ fn update(
     {
         let g = store.as_ref().map(|s| &s.settings.graphics);
         let preset = g.map_or("".to_string(), |g| format!("{:?}", g.preset));
-        let new = line(mode, s, &preset, g.map_or(100.0, |g| g.render_scale * 100.0));
+        let (size, share) = scale.as_ref().map_or((UVec2::ZERO, 1.0), |n| (n.size, n.scale));
+        let new = line(mode, s, &preset, size, share);
         if t.0 != new {
             t.0 = new;
         }
@@ -164,8 +166,9 @@ mod tests {
         assert!((s.fps - 60.0 / (0.016 * 59.0 + 0.05)).abs() < 1e-3);
         assert!((s.worst_ms - 50.0).abs() < 1e-3);
         assert!((s.low_fps - 20.0).abs() < 1e-3);
-        assert_eq!(line(PerfMonitor::Fps, s, "High", 100.0), "60 FPS");
-        assert!(line(PerfMonitor::Full, s, "High", 100.0).contains("1% low 20 FPS"));
+        assert_eq!(line(PerfMonitor::Fps, s, "High", UVec2::new(3008, 1692), 0.5), "60 FPS");
+        let full = line(PerfMonitor::Full, s, "High", UVec2::new(3008, 1692), 0.5);
+        assert!(full.contains("1% low 20 FPS") && full.contains("3D 3008 x 1692 (50%)"), "{full}");
         assert_eq!(summarise(&[]), None);
     }
 
