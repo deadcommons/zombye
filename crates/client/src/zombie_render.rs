@@ -50,8 +50,7 @@ pub struct ZombieRenderPlugin;
 impl Plugin for ZombieRenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<ZombieMaterial>::default())
-            .add_systems(Startup, setup_zombie_assets)
-            .add_systems(Update, sync_zombies);
+            .add_systems(Update, (setup_zombie_assets.run_if(crate::loading::may_load.and(run_once)), sync_zombies).chain());
     }
 }
 

@@ -617,7 +617,7 @@ impl Plugin for GameAudioPlugin {
             .insert_resource(Listener { pos: Vec2::ZERO, right: Vec2::X, asleep: false, indoors: false })
             .init_resource::<CarTrack>()
             .add_message::<crate::music::RadioTuned>()
-            .add_systems(Startup, load_bank)
+            .add_systems(Update, load_bank.run_if(crate::loading::may_load.and(run_once)))
             .add_systems(Update, toggle_mute)
             .add_systems(
                 PostUpdate,
