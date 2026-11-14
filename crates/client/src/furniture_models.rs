@@ -83,6 +83,29 @@ pub struct ModelPart {
     tris: Vec<Tri>,
 }
 
+/// How far in from the glass's box a body triangle must lie to count as the cabin's (metres).
+const CABIN_INSET: f32 = 0.03;
+
+/// A cabin colour lifted toward a dark seat cloth, so it shows through the glass.
+fn lift_cabin(c: LinearRgba) -> LinearRgba {
+    let seat = LinearRgba::rgb(0.09, 0.08, 0.07);
+    LinearRgba { red: c.red.max(seat.red), green: c.green.max(seat.green), blue: c.blue.max(seat.blue), alpha: c.alpha }
+}
+
+/// A wheel's corner shaded into five spokes across its rim, by its angle about the axle (the
+/// part's own x). A wheel baked to vertex colours is a round, even disc that looks still however
+/// fast it rolls; the spokes show it turning. The tyre (the outer quarter) is left as it is.
+pub fn spoke_shade(p: Vec3, radius: f32, c: LinearRgba) -> LinearRgba {
+    let r = (p.y * p.y + p.z * p.z).sqrt();
+    if r > radius * 0.75 || r < radius * 0.12 {
+        return c;
+    }
+    let a = p.z.atan2(p.y);
+    let spoke = (5.0 * a).cos().clamp(-1.0, 1.0) * 0.5 + 0.5;
+    let k = 0.45 + 0.55 * spoke;
+    LinearRgba { red: c.red * k, green: c.green * k, blue: c.blue * k, alpha: c.alpha }
+}
+
 /// A vehicle's model split for drawing: the body without its moving parts, and each part as a
 /// mesh in its own frame (`vehicles_render.rs`).
 pub struct SplitModel {
@@ -275,9 +298,21 @@ impl FurnitureModels {
             Some(w) => [0, 1, 2].map(|i| w.colour(p[i], n[i], c)),
             None => [c; 3],
         };
+        // The cabin: inside the glass. Its trim baked to vertex colours is nearly black, so through
+        // see-through glass it read as a black window; it is lifted to a dark seat colour.
+        let cabin = m.parts.iter().filter(|p| p.kind == PartKind::Glass).flat_map(|p| p.tris.iter().flat_map(|t| t.0.map(|q| p.pivot.transform_point3(q)))).fold(None, |b: Option<(Vec3, Vec3)>, q| {
+            Some(b.map_or((q, q), |(lo, hi)| (lo.min(q), hi.max(q))))
+        });
         let mut mb = MeshBuilder::default();
         for ((p, n, c, _), _) in m.tris.iter().zip(&m.part_of).filter(|(_, o)| **o == u8::MAX) {
-            mb.triangle_with_normals_shaded(*p, *n, colour(p, n, *c));
+            let mut cs = colour(p, n, *c);
+            if let Some((lo, hi)) = cabin {
+                let (lo, hi) = (lo + Vec3::splat(CABIN_INSET), hi - Vec3::splat(CABIN_INSET));
+                if p.iter().all(|q| q.cmpge(lo).all() && q.cmple(hi).all()) {
+                    cs = cs.map(lift_cabin);
+                }
+            }
+            mb.triangle_with_normals_shaded(*p, *n, cs);
         }
         let parts = m
             .parts
@@ -285,12 +320,18 @@ impl FurnitureModels {
             .map(|part| {
                 let mut pb = MeshBuilder::default();
                 let (lo, hi) = part.tris.iter().flat_map(|t| t.0).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
+                let radius = ((hi.y - lo.y).max(hi.z - lo.z) * 0.5).max(0.05);
                 for (p, n, c, _) in &part.tris {
                     // Worn by where the corner is in the model, as the whole model would be.
                     let (wp, wn) = (p.map(|p| part.pivot.transform_point3(p)), n.map(|n| part.pivot.transform_vector3(n).normalize_or_zero()));
-                    pb.triangle_with_normals_shaded(*p, *n, colour(&wp, &wn, *c));
+                    let mut cs = colour(&wp, &wn, *c);
+                    if let PartKind::Wheel { .. } = part.kind {
+                        for (k, c) in cs.iter_mut().enumerate() {
+                            *c = spoke_shade(p[k], radius, *c);
+                        }
+                    }
+                    pb.triangle_with_normals_shaded(*p, *n, cs);
                 }
-                let radius = ((hi.y - lo.y).max(hi.z - lo.z) * 0.5).max(0.05);
                 (part.kind, Transform::from_matrix(part.pivot), pb.build(), radius)
             })
             .collect();
@@ -753,6 +794,17 @@ fn thin(tris: &[Tri], want: usize) -> Option<Vec<Tri>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wheel_rim_has_spokes_that_turn_with_it() {
+        let c = LinearRgba::rgb(0.5, 0.5, 0.5);
+        let at = |a: f32| spoke_shade(Vec3::new(0.0, 0.2 * a.cos(), 0.2 * a.sin()), 0.35, c).red;
+        // A spoke and the gap between two differ; the tyre and the hub are left alone.
+        assert!(at(0.0) > at(std::f32::consts::PI / 5.0) + 0.2);
+        assert_eq!(spoke_shade(Vec3::new(0.0, 0.34, 0.0), 0.35, c), c);
+        // Turned a fifth of a turn, the rim looks the same: a spoke has moved on to the next.
+        assert!((at(0.3) - at(0.3 + std::f32::consts::TAU / 5.0)).abs() < 1e-4);
+    }
 
     fn models() -> FurnitureModels {
         FurnitureModels::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"))

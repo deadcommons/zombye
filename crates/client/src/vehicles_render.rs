@@ -420,10 +420,10 @@ fn draw_vehicles(
             if kind == PartKind::Glass {
                 let m = glass.0.get_or_insert_with(|| {
                     standard.add(StandardMaterial {
-                        base_color: Color::srgba(0.55, 0.62, 0.68, 0.42),
+                        base_color: Color::srgba(0.55, 0.62, 0.68, 0.3),
                         alpha_mode: AlphaMode::Blend,
                         perceptual_roughness: 0.08,
-                        reflectance: 0.6,
+                        reflectance: 0.35,
                         ..default()
                     })
                 });
