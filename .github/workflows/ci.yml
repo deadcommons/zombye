@@ -1,0 +1,67 @@
+# Checks every pull request: commits signed off (DCO), clippy, and the tests.
+# Tests that need a GPU skip themselves (ZOMBYE_SKIP_GPU_TESTS).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, playtest]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sign-off:
+    name: Commits signed off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit has a Signed-off-by from a person
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bad=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            offs=$(git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$c" | grep -v 'noreply@anthropic.com' | grep -c . || true)
+            if [ "$offs" -eq 0 ]; then
+              echo "::error::$(git log -1 --format='%h %s' "$c"): no Signed-off-by from a person"
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo "Add your sign-off with: git rebase --signoff $BASE && git push --force-with-lease"
+            echo "An agent never signs off for itself (AI.md); the person it works for does."
+          fi
+          exit $bad
+
+  test:
+    name: Clippy and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      ZOMBYE_SKIP_GPU_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        # Reported, not blocking yet: the tree has warnings of its own to clear first.
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+      - name: Tests
+        run: cargo test --release --workspace
