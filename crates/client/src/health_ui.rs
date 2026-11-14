@@ -445,7 +445,7 @@ fn wound_card(c: &mut ChildSpawnerCommands, w: &WoundView, on: bool) {
 
 /// Makes `e` one to press: the left button is `click`, the right stops using an item.
 fn press(mut e: EntityCommands, click: PanelClick) {
-    e.observe(move |mut ev: On<PointerPress>, mut clicks: ResMut<Clicks>| {
+    e.insert(crate::focus::Focusable).observe(move |mut ev: On<PointerPress>, mut clicks: ResMut<Clicks>| {
         ev.propagate(false);
         match ev.button {
             PointerButton::Primary => clicks.0.push(click.clone()),

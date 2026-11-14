@@ -645,6 +645,8 @@ pub struct Pad {
     pub nav_step: IVec2,
     pub nav_stick: Vec2,
     pub nav_tab: i32,
+    /// Y on a screen that goes by focus: the right-click on what has it (an item's menu).
+    pub alt: bool,
     /// The buttons pressed this frame, a bit each by [`Button`]'s order (for screens that take a
     /// button whatever it is bound to: the death and morning screens).
     pub pressed: u16,
@@ -929,6 +931,12 @@ impl Screens<'_> {
             || self.front.as_ref().is_some_and(|f| f.up())
     }
 
+    /// A screen the pad moves round by focus (`focus.rs`): the menus, and the inventory's frame
+    /// with an item's menu. The pad does nothing else meanwhile.
+    fn focused(&self) -> bool {
+        self.menus() || self.inventory.as_ref().is_some_and(|i| i.open) || self.item_menu.as_ref().is_some_and(|m| m.is_up())
+    }
+
     /// A wheel is up: the sticks pick and A and B are its own.
     fn wheel(&self) -> bool {
         self.wheel.as_ref().is_some_and(|w| w.is_up())
@@ -1051,7 +1059,7 @@ fn read_pad(
     // B on a screen, and Menu anywhere, are Esc; in the pause menu and the settings the pad does
     // nothing else but move the focus (below).
     let back = g.just_pressed(Button::B.gamepad()) && screens.open();
-    let menus = screens.menus();
+    let menus = screens.focused();
     let mut press = |k: KeyCode, keys: &mut ButtonInput<KeyCode>| {
         keys.press(k);
         injected.0.push(k);
@@ -1067,6 +1075,7 @@ fn read_pad(
         out.nav_stick = dead_zone(g.left_stick());
         out.confirm = g.just_pressed(Button::A.gamepad());
         out.nav_tab = step(Button::RB) - step(Button::LB);
+        out.alt = g.just_pressed(Button::Y.gamepad());
     }
     if menus || back {
         *KEYS.write().unwrap() = KeyFrame::default();
