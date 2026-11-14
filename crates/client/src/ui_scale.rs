@@ -124,6 +124,10 @@ pub struct ClientSettings {
     /// The window's size when it isn't full screen, in UI pixels, as the player last left it
     /// (`window_mode.rs`; `None`: 1600 x 900). Never used with `--size`.
     pub window_size: Option<(u32, u32)>,
+    /// The 3D resolution in full screen, as a share of the screen's pixels each way
+    /// (`render_scale.rs`; the Display tab's Resolution list). `None`: Auto, a size the GPU keeps
+    /// smooth on this screen.
+    pub fullscreen_scale: Option<f32>,
     /// Frames wait for the screen's refresh (`--novsync` turns it off for a session).
     pub vsync: bool,
     /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
@@ -134,6 +138,9 @@ pub struct ClientSettings {
     pub help_text: crate::help_text::HelpText,
     /// The old look (`film.rs`): the picture as a faded print, off, subtle or strong.
     pub old_look: crate::film::OldLook,
+    /// The performance monitor in the top right corner (`perf_monitor.rs`): off, the frame rate,
+    /// or the frame rate with frame times, the preset and the 3D resolution.
+    pub perf_monitor: crate::perf_monitor::PerfMonitor,
     /// Send crash, F12, hitch and desync reports to the developers (`report.rs`, Linear DCM-92).
     pub send_reports: bool,
     /// The yellow line has said once that reports are sent and how to turn it off.
@@ -171,10 +178,12 @@ impl Default for ClientSettings {
             fullscreen: default_fullscreen(),
             fullscreen_chosen: false,
             window_size: None,
+            fullscreen_scale: None,
             vsync: true,
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
             old_look: crate::film::OldLook::Off,
+            perf_monitor: crate::perf_monitor::PerfMonitor::Off,
             send_reports: true,
             reports_notice_seen: false,
             keys: Default::default(),

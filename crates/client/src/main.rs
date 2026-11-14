@@ -122,6 +122,7 @@ mod heard;
 mod held;
 mod health_ui;
 mod help_text;
+mod perf_monitor;
 mod hotbar;
 mod hud;
 mod inventory_ui;
@@ -881,7 +882,7 @@ fn main() {
     if !offscreen {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
-    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
+    app.add_plugins((fps_log::FpsLogPlugin, perf_monitor::PerfMonitorPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
     // The main menu over the game: up from the start, or for the pause menu's way out (#36).
     if !offscreen && app.world().resource::<Options>().connect.is_none() {
         app.add_plugins(main_menu::MenuLayerPlugin);

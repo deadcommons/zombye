@@ -104,12 +104,16 @@ pub enum Change {
     Music(i32),
     /// The window's size, a step down or up the list (`window_mode::SIZES`).
     WindowSize(i32),
+    /// The 3D resolution in full screen, as a share of the screen (`render_scale::choices`).
+    ScreenRes(f32),
     /// Steps of `ui_scale::STEP`.
     UiScale(i32),
     /// How much the UI explains (`help_text.rs`).
     HelpText(HelpText),
     /// The picture as a faded print (`film.rs`).
     OldLook(OldLook),
+    /// The frame-rate read-out (`perf_monitor.rs`).
+    PerfMonitor(crate::perf_monitor::PerfMonitor),
     /// Keyboard and mouse, the controller, or whichever was touched last (`pad.rs`).
     Input(crate::pad::InputSetting),
     /// Everything on this tab as the game ships it.
@@ -140,14 +144,19 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                 s.window_size = Some(size);
             }
         }
+        Change::ScreenRes(share) => s.fullscreen_scale = Some(share),
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
         Change::HelpText(h) => s.help_text = h,
         Change::OldLook(o) => s.old_look = o,
+        Change::PerfMonitor(m) => s.perf_monitor = m,
         Change::Input(i) => s.input = i,
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
-                Tab::Display => (s.fullscreen, s.vsync, s.window_size, s.ui_scale) = (d.fullscreen, d.vsync, d.window_size, d.ui_scale),
+                Tab::Display => {
+                    (s.fullscreen, s.vsync, s.window_size, s.ui_scale) = (d.fullscreen, d.vsync, d.window_size, d.ui_scale);
+                    s.fullscreen_scale = d.fullscreen_scale;
+                }
                 Tab::Graphics => s.graphics = d.graphics,
                 Tab::Effects => {
                     let g = &mut s.graphics;
@@ -157,7 +166,10 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                     s.old_look = d.old_look;
                 }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
+                Tab::Game => {
+                    (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports);
+                    s.perf_monitor = d.perf_monitor;
+                }
                 Tab::Controls => {
                     s.keys.clear();
                     s.pad.clear();
@@ -224,6 +236,28 @@ fn stepper(label: &'static str, about: &'static str, value: f32, lo: f32, hi: f3
     Row { label, about, control: Control::Stepper { value: format!("{pct:.0}%"), down: (value > lo + 1e-3).then(|| make(-1)), up: (value < hi - 1e-3).then(|| make(1)) } }
 }
 
+/// Full screen's Resolution row: the 3D resolutions for a screen of `screen` pixels (not known
+/// until a full-screen window has been seen), Auto marked. The window stays the screen's own size
+/// and the UI its own sharpness; only the world is drawn smaller and scaled up.
+pub(crate) fn screen_resolution(s: &ClientSettings, screen: Option<UVec2>) -> Row {
+    use crate::render_scale::{auto_scale, choices, size_at};
+    let about = "The size the world is drawn at, scaled up to fill the screen; the UI stays sharp. Auto follows the graphics preset: full size at High and Ultra, 1080 lines at Medium, 900 at Low.";
+    let Some(screen) = screen else {
+        return Row { label: "Resolution", about, control: Control::Stepper { value: "Auto".into(), down: None, up: None } };
+    };
+    let auto = auto_scale(screen, s.graphics.preset);
+    let now = s.fullscreen_scale.unwrap_or(auto);
+    let list = choices(screen);
+    let at = list.iter().position(|c| (c - now).abs() < 0.01).unwrap_or_else(|| list.iter().rposition(|c| *c <= now).unwrap_or(0));
+    let size = size_at(screen, list.get(at).copied().unwrap_or(now));
+    let value = if s.fullscreen_scale.is_none() { format!("Auto ({} x {})", size.x, size.y) } else { format!("{} x {}", size.x, size.y) };
+    Row {
+        label: "Resolution",
+        about,
+        control: Control::Stepper { value, down: at.checked_sub(1).map(|i| Change::ScreenRes(list[i])), up: list.get(at + 1).map(|c| Change::ScreenRes(*c)) },
+    }
+}
+
 /// A tab's rows, from the settings as they are. (Controls has none: it is the key list, [`KEYS`].)
 pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
     let g = &s.graphics;
@@ -234,11 +268,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             vec![
                 switch("Fullscreen", "The window fills the screen, without a border. Alt+Enter or F11 switches.", s, Switch::Fullscreen),
                 if s.fullscreen {
-                    Row {
-                        label: "Resolution",
-                        about: "Full screen uses the screen's own resolution. Turn Fullscreen off to pick a window size.",
-                        control: Control::Stepper { value: "Screen".into(), down: None, up: None },
-                    }
+                    screen_resolution(s, crate::render_scale::screen())
                 } else {
                     Row {
                         label: "Resolution",
@@ -320,6 +350,15 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                     HelpText::Off => "As Short, and the reminders of what keys and clicks do go too.",
                 },
                 control: Control::Choice(HelpText::ALL.into_iter().map(|h| (h.name().to_string(), h == s.help_text, Change::HelpText(h))).collect()),
+            },
+            Row {
+                label: "Performance monitor",
+                about: match s.perf_monitor {
+                    crate::perf_monitor::PerfMonitor::Off => "Shows the frame rate in the top right corner while you play.",
+                    crate::perf_monitor::PerfMonitor::Fps => "The frame rate, in the top right corner.",
+                    crate::perf_monitor::PerfMonitor::Full => "The frame rate, frame times, the slowest 1% of frames, the preset and the 3D resolution.",
+                },
+                control: Control::Choice(crate::perf_monitor::PerfMonitor::ALL.into_iter().map(|m| (m.name().to_string(), m == s.perf_monitor, Change::PerfMonitor(m))).collect()),
             },
             switch("Opening hints", "Outlines of the doors and windows a building hides from the camera.", s, Switch::OpeningHints),
             switch("Zombie silhouettes", "Zombies you can see show through what covers them from the camera.", s, Switch::ZombieSilhouettes),
@@ -756,7 +795,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     });
                 }
                 let note = match tab {
-                    Tab::Display => "Kept between sessions. For more frame rate at the same size, lower 3D resolution on the Graphics tab.",
+                    Tab::Display => "Kept between sessions. For more frame rate in full screen, pick a smaller Resolution: the UI stays sharp.",
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
                     Tab::Effects => "The look over the picture. No preset turns the old look on or off.",
@@ -1125,11 +1164,26 @@ mod tests {
         assert_eq!(s.window_size, Some((1366, 768)));
         // It leaves the graphics preset alone.
         assert_eq!(s.graphics, ClientSettings::default().graphics);
-        // Full screen: the screen's own, nothing to step.
+        // Full screen, before the screen is known: Auto, nothing to step.
         s.fullscreen = true;
-        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Screen"));
+        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Auto"));
+        // On a 6K screen at High: Auto is the screen's own, and the list steps down from it.
+        let six_k = Some(UVec2::new(6016, 3384));
+        let Control::Stepper { value, down: Some(down), up: None } = screen_resolution(&s, six_k).control else { panic!() };
+        assert_eq!(value, "Auto (6016 x 3384)");
+        change(&mut s, down);
+        assert!(matches!(screen_resolution(&s, six_k).control, Control::Stepper { ref value, .. } if value == "4512 x 2538"));
+        // At Medium Auto is 1080 lines.
+        let mut t = s.clone();
+        t.fullscreen_scale = None;
+        t.graphics.preset = crate::graphics::Preset::Medium;
+        assert!(matches!(screen_resolution(&t, six_k).control, Control::Stepper { ref value, .. } if value == "Auto (1920 x 1080)"));
+        // The biggest is the screen's own, with nothing above it.
+        t.fullscreen_scale = Some(1.0);
+        assert!(matches!(screen_resolution(&t, six_k).control, Control::Stepper { ref value, up: None, .. } if value == "6016 x 3384"));
+        assert_eq!(s.graphics, ClientSettings::default().graphics);
         change(&mut s, Change::Defaults(Tab::Display));
-        assert_eq!(s.window_size, None);
+        assert_eq!((s.window_size, s.fullscreen_scale), (None, None));
     }
 
     #[test]
