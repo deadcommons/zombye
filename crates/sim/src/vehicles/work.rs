@@ -570,7 +570,7 @@ impl World {
         let at = container_point(kind, &v.state, slot);
         let tile = at.floor().as_ivec2();
         let room = if self.map.in_bounds(tile) { self.map.room_at(at) } else { 0 };
-        Some(ContainerSite { id: vehicle_container(v.id, slot), def, level: 0, building: u16::MAX, room, min: tile, size: IVec2::ONE, body: Some(at) })
+        Some(ContainerSite { id: vehicle_container(v.id, slot), def, level: 0, building: u16::MAX, room, min: tile, size: IVec2::ONE, body: Some(at), front: None })
     }
 
     /// Container `c` if it is a vehicle's boot or glovebox.

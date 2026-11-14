@@ -1791,8 +1791,12 @@ A new single-player game can begin with a survivor of your making in a world of 
   to a kind, `room: "any"` the fallback (a sink is a bathroom cabinet in a bathroom, an under-sink cupboard
   elsewhere; a wardrobe in a hall is a coat cupboard). Ground-floor furniture that maps to one is a `ContainerSite`
   (`World::containers()`), id = the furniture's place in the map (buildings in order, each one's furniture in order),
-  opened from the same room within `CONTAINER_REACH` (1.6 m of the nearest edge of the furniture's footprint; E takes
-  the one faced, within 60 degrees, nearest first, else the nearest in reach). New furniture kinds `shelf` (in the
+  opened from the same room within `CONTAINER_REACH` (1.6 m of the nearest edge of the furniture's footprint) and
+  **only from its front** (#54, `ContainerSite::in_front`: on the side its `facing` points, at most `containers.ron`'s
+  `front_slack_m`, 0.3 m, past either end; never beside or behind it, so a cupboard by a doorway doesn't take E from the
+  door; a kind with `any_side: true`, the coffee table's drawer, opens from anywhere; keeping one open is still 2.2 m,
+  any side). E takes the one faced, within 60 degrees, nearest first, else the nearest in reach; the client's E prompt
+  counts a container only when it is in the cone ahead, never because it is touching, so a door faced beside it wins. New furniture kinds `shelf` (in the
   family house's laundry) and `workbench`. A container is filled the first time anyone searches it, from its loot
   table (see Loot; a hash of seed and id, never the world RNG, so the same in any order). Opened containers are stored sparsely (`World::opened`, saved, in
   `state_hash`); a searched container stays open (and usable) to that player (`Player::open`) until it is `CONTAINER_KEEP_OPEN`
