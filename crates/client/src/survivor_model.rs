@@ -276,13 +276,16 @@ enum Src {
 }
 
 /// How a hand holds a thing (#35), each a grip frame on the hand (the grip at the origin, +Z along
-/// the thing, +Y its top): a handle in a hammer grip (a bat, a knife, a flashlight), a gun's grip,
-/// or a small thing in the fist (a mug, a tin, a bottle). See [`Hand`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// the thing, +Y its top): a handle pointing forward and down from the fist at rest (a knife, a
+/// bat, a flashlight), a tool's handle with its head up (#65: a hammer, a hatchet, a frying pan), a
+/// gun's grip, or a small thing in the fist (a mug, a tin, a bottle). See [`Hand`]. A thing with a
+/// handle says which in `held.ron` (`hold: Tool`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize)]
 pub enum Hold {
     Handle = 0,
     Gun = 1,
     Fist = 2,
+    Tool = 3,
 }
 
 /// How far off the socket, out of the palm, the grip is (metres): the socket is in the middle of
@@ -295,7 +298,11 @@ pub(crate) const SKIN: f32 = 0.015;
 /// past the thumb toward the fingers (radians): from the heel of the hand to between thumb and
 /// forefinger, so in a hanging hand it points forward and down, 45 degrees off the forearm.
 const TILT: f32 = std::f32::consts::FRAC_PI_4;
-/// And its grip is this far back from the socket toward the wrist (metres), so the handle passes
+/// A tool's handle at rest leans the other way by this much (radians): off the knuckles' line back
+/// toward the wrist, so its head is up (#65): forward and up from a fist that hangs, and near
+/// upright (10 degrees forward) from the low carry, whose forearm points 30 degrees down.
+const RAISE: f32 = 0.349;
+/// And a handle's grip is this far back from the socket toward the wrist (metres), so the handle passes
 /// the forefinger's root, not through it.
 const BACK: f32 = 0.02;
 /// The closed hand, round a thin handle (radians): the fingers bent at the knuckles and again
@@ -366,6 +373,11 @@ fn framed(along: Vec3, toward: Vec3) -> Quat {
 ///   wrist: at rest [`TILT`] off the knuckles' line toward the fingers, so a knife or a bat points
 ///   forward and down from a hanging fist; along the knuckles while a weapon's clip has the arm
 ///   (it shifts in the grip as the arm comes up), which is where the clips mean it to point.
+/// - A **tool** (#65: a hammer, a hatchet, a frying pan) is a handle too, but one held to strike
+///   with its head: at rest it leans [`RAISE`] the other way, back toward the wrist, so the head
+///   is up out of the fist, not forward and down like a knife's point; along the knuckles in a
+///   clip like any handle. Its top (+Y, to the wrist) is its back: the claw of a hammer, with the
+///   striking face away from the wrist, the way the forearm points.
 /// - A **gun**'s barrel runs on the way the fingers point, its top to the thumb.
 /// - A small thing in the **fist** lies along the knuckles' line, out past the thumb.
 ///
@@ -435,8 +447,14 @@ impl Hand {
     fn frame(&self, hold: Hold, clip_w: f32) -> Transform {
         // On the socket's axes: the fingers point along X away from the body, the thumb along +Z.
         let (fingers, thumb) = (Vec3::X * self.out, Vec3::Z);
-        let tilt = if hold == Hold::Handle { TILT * (1.0 - clip_w.clamp(0.0, 1.0)) } else { 0.0 };
-        // `tilt` off the knuckles' line (+Z) toward the fingers, its top to the wrist.
+        let rest = 1.0 - clip_w.clamp(0.0, 1.0);
+        let tilt = match hold {
+            Hold::Handle => TILT * rest,
+            Hold::Tool => -RAISE * rest,
+            Hold::Gun | Hold::Fist => 0.0,
+        };
+        // `tilt` off the knuckles' line (+Z) toward the fingers (a tool's the other way, toward
+        // the wrist), its top to the wrist.
         let along = thumb * tilt.cos() + fingers * tilt.sin();
         let top = -fingers * tilt.cos() + thumb * tilt.sin();
         let mut turn = self.axes * Quat::from_mat3(&Mat3::from_cols(top.cross(along), top, along));
@@ -444,7 +462,7 @@ impl Hand {
             // A gun's barrel (+Z) lies along the fingers, its top to the thumb: a quarter turn about X.
             turn *= Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
         }
-        let at = self.palm - self.axes * fingers * (BACK * tilt / TILT);
+        let at = self.palm - self.axes * fingers * (BACK * tilt.max(0.0) / TILT);
         Transform::from_translation(self.rest.inverse() * at).with_rotation(self.rest.inverse() * turn)
     }
 
@@ -1633,6 +1651,8 @@ mod tests {
             for (hold, clip_w, grip, along, top) in [
                 (Hold::Handle, 0.0, palm - fingers * BACK, Vec3::Z * cos + fingers * sin, -fingers * cos + Vec3::Z * sin),
                 (Hold::Handle, 1.0, palm, Vec3::Z, -fingers),
+                (Hold::Tool, 0.0, palm, Vec3::Z * RAISE.cos() - fingers * RAISE.sin(), -fingers * RAISE.cos() - Vec3::Z * RAISE.sin()),
+                (Hold::Tool, 1.0, palm, Vec3::Z, -fingers),
                 (Hold::Gun, 0.0, palm, fingers, Vec3::Z),
                 (Hold::Gun, 1.0, palm, fingers, Vec3::Z),
                 (Hold::Fist, 0.0, palm, Vec3::Z, -fingers),
@@ -1680,7 +1700,14 @@ mod tests {
             assert!((25.0..=65.0).contains(&off), "a handle at rest is {off:.0} degrees off the forearm");
             let bend = fingers.angle_between(arm).to_degrees();
             assert!(bend < 40.0, "the hand is bent {bend:.0} degrees off the forearm");
+            // A tool's head is not down there with a knife's point (#65; the owner: "claw hammer
+            // is held like a knife and wrong angle"): it is that much higher out of the same fist.
+            let (tool, ..) = held(frame, Hold::Tool, 0.0);
+            let lift = tool.angle_between(along).to_degrees();
+            assert!(tool.y > along.y + 0.5 && (lift - (TILT + RAISE).to_degrees()).abs() < 1.0, "a tool at rest points {tool}, {lift:.0} degrees off a knife's {along}");
         }
+        let (tool, ..) = held(&idle.frames[0], Hold::Tool, 1.0);
+        assert!((tool - Vec3::Z).length() < 1e-3, "in a weapon's clip a tool points {tool}, not where the clips mean");
         let left = Hand::new(&body, &rt, "LeftHand", "hand_l", 1.0);
         assert_eq!(left.turn(Hold::Fist, 0.0), Quat::IDENTITY);
     }
@@ -1690,7 +1717,8 @@ mod tests {
     /// straight down and hides against the leg"). Over every clip, whatever the gait has the arm
     /// doing, either hand: in front, the elbow is bent 70 to 90 degrees, the forearm forward, the
     /// fist in front of the body between the hips and the chest and what stands in it upright; low,
-    /// a gun's barrel points forward and down 30 degrees, its top up, the fist out beside the hip.
+    /// a gun's barrel points forward and down 30 degrees, its top up, the fist out beside the hip,
+    /// and a tool (a hammer) stands in that fist with its head up (#65).
     /// A thing at one's side, or no weight, leaves the arm to the clips.
     #[test]
     fn a_small_thing_is_carried_in_front_and_a_pistol_low_and_ready() {
@@ -1714,10 +1742,10 @@ mod tests {
                         let g = rig.globals(&pose);
                         let [shoulder, elbow, wrist, hip] = [upper, fore, hand.bone, hips].map(|b| g[b].transform_point3(Vec3::ZERO));
                         let frame = |hold: Hold| (g[hand.bone] * hand.frame(hold, 0.0).to_matrix()).to_scale_rotation_translation().1;
-                        (pose, shoulder, elbow, wrist, hip, frame(Hold::Fist), frame(Hold::Gun))
+                        (pose, shoulder, elbow, wrist, hip, frame(Hold::Fist), frame(Hold::Gun), frame(Hold::Tool))
                     };
                     let name = format!("{} {k}/8 {socket}", clip.name);
-                    let (_, shoulder, elbow, wrist, hip, fist, _) = at(Carry::Front, 1.0);
+                    let (_, shoulder, elbow, wrist, hip, fist, ..) = at(Carry::Front, 1.0);
                     let bend = (elbow - shoulder).angle_between(wrist - elbow).to_degrees();
                     assert!((70.0..=90.0).contains(&bend), "{name}: the elbow is bent {bend:.0} degrees");
                     let forearm = (wrist - elbow).normalize();
@@ -1725,7 +1753,12 @@ mod tests {
                     assert!((fist * Vec3::Z).y > 0.97, "{name}: what stands in the fist has its top to {}", fist * Vec3::Z);
                     assert!(wrist.z > shoulder.z + 0.15 && wrist.x.abs() < shoulder.x.abs(), "{name}: the fist at {wrist} is not in front of the body (shoulder {shoulder})");
                     assert!(wrist.y > hip.y && wrist.y < shoulder.y - 0.15, "{name}: the fist at {wrist} is not at the waist (hips {hip}, shoulder {shoulder})");
-                    let (_, shoulder, _, wrist, _, _, gun) = at(Carry::Low, 1.0);
+                    let (_, shoulder, _, wrist, _, _, gun, tool) = at(Carry::Low, 1.0);
+                    // A hammer carried so (#65) stands in the fist, its head up and a little
+                    // forward, its top (the claw) to the body and so its face the way he faces.
+                    let (head, claw) = (tool * Vec3::Z, tool * Vec3::Y);
+                    assert!(head.y > 0.95 && head.z > 0.0, "{name}: a tool's head is to {head}, not up");
+                    assert!(claw.z < -0.9, "{name}: a tool's back is to {claw}, not to the body");
                     let barrel = gun * Vec3::Z;
                     let down = (-barrel.y).asin().to_degrees();
                     assert!(barrel.z > 0.8 && (25.0..=35.0).contains(&down), "{name}: a gun's barrel points {barrel}, {down:.0} degrees down");

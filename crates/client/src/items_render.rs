@@ -185,7 +185,8 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
             let weapon = d.weapon.as_ref().and_then(|id| join.weapons.iter().position(|w| &w.id == id));
             // A gun by its grip, the barrel along the fingers; any other weapon, or a thing made
             // to be held, by its handle.
-            let hold = if weapon.is_some_and(|w| join.weapons[w].ranged.is_some()) { Hold::Gun } else { Hold::Handle };
+            // `held.ron` may say otherwise (`hold: Tool`: a hammer's head is up, #65).
+            let hold = crate::held::grip(&d.id).hold.unwrap_or(if weapon.is_some_and(|w| join.weapons[w].ranged.is_some()) { Hold::Gun } else { Hold::Handle });
             let carry = crate::held::carry(&d.id, weapon.is_some());
             if let Some(m) = in_hand.mesh(&d.id) {
                 return Some(HandLook::gripped(meshes.add(m), model_material.clone(), hold, gripped(&d.id, Transform::IDENTITY), carry));

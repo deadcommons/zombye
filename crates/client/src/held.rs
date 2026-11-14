@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 use bevy::prelude::*;
 use serde::Deserialize;
 
+use crate::survivor_model::Hold;
+
 /// How a hand carries a thing while nothing else has the arm (#35): standing, walking, running
 /// and sneaking; a guard, a blow, eating, drinking, a reload and the like take the arm from it
 /// (`survivor_model::SurvivorModel::carry`).
@@ -41,6 +43,10 @@ pub struct Grip {
     pub scale: f32,
     #[serde(deserialize_with = "some_carry")]
     pub carry: Option<Carry>,
+    /// How the hand holds it (`hold: Tool`): left out, a gun by its grip and any other weapon or
+    /// thing with a held model by its handle, pointing forward and down at rest.
+    #[serde(deserialize_with = "some_hold")]
+    pub hold: Option<Hold>,
 }
 
 /// `carry: Front` in the file, not `carry: Some(Front)`.
@@ -48,9 +54,14 @@ fn some_carry<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Carry>, D
     Carry::deserialize(d).map(Some)
 }
 
+/// `hold: Tool` in the file, not `hold: Some(Tool)`.
+fn some_hold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Hold>, D::Error> {
+    Hold::deserialize(d).map(Some)
+}
+
 impl Default for Grip {
     fn default() -> Self {
-        Self { offset: (0.0, 0.0, 0.0), turn: (0.0, 0.0, 0.0), scale: 1.0, carry: None }
+        Self { offset: (0.0, 0.0, 0.0), turn: (0.0, 0.0, 0.0), scale: 1.0, carry: None, hold: None }
     }
 }
 
@@ -171,9 +182,29 @@ mod tests {
         assert_eq!(of("kitchen_knife", true), Carry::Side);
     }
 
+    /// How a handle is held is data too (#65): a tool with its head up, said by its grip. The
+    /// shipped file has the claw hammer, the hatchet, the frying pan and the crowbar so, carried low and ready,
+    /// and the hammer turned to face its striking face forward; a knife says nothing and stays as
+    /// it was.
+    #[test]
+    fn holds_are_data() {
+        let grips = parse(r#"{"mallet": (hold: Tool), "bat": (hold: Handle, carry: Side)}"#).unwrap();
+        assert_eq!((grips["mallet"].hold, grips["bat"].hold), (Some(Hold::Tool), Some(Hold::Handle)));
+        assert!(parse(r#"{"mallet": (hold: Upright)}"#).is_err());
+        let shipped = shipped();
+        for id in ["claw_hammer", "hatchet", "frying_pan", "crowbar"] {
+            assert_eq!((shipped[id].hold, shipped[id].carry), (Some(Hold::Tool), Some(Carry::Low)), "{id}");
+        }
+        assert_eq!(shipped["claw_hammer"].turn, (0.0, 0.0, 180.0));
+        assert!(shipped.get("kitchen_knife").is_none_or(|g| g.hold.is_none()));
+        for id in ["baseball_bat", "golf_club", "wooden_plank", "fire_axe"] {
+            assert!(shipped.get(id).is_none_or(|g| g.hold.is_none() && g.carry.is_none()), "{id} trails at the side");
+        }
+    }
+
     #[test]
     fn a_grip_moves_then_turns_the_item() {
-        let g = Grip { offset: (0.0, 0.0, 0.1), turn: (0.0, 90.0, 0.0), scale: 2.0, carry: None };
+        let g = Grip { offset: (0.0, 0.0, 0.1), turn: (0.0, 90.0, 0.0), scale: 2.0, carry: None, hold: None };
         let p = g.transform().transform_point(Vec3::Z);
         assert!((p - Vec3::new(2.0, 0.0, 0.1)).length() < 1e-5, "{p}");
     }
