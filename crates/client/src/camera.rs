@@ -186,6 +186,19 @@ pub struct IsoCamera {
     look_yaw: f32,
     /// Held where it is on the way (`--view-mix`, a picture of the switch).
     held: bool,
+    /// At the wheel the view widens with speed (cars stage 5, #39): the fixed view shows `zoom`
+    /// times this (1 standing, up to `1 + SPEED_PULL`), eased by [`IsoCamera::pull_toward`].
+    pub speed_pull: f32,
+}
+
+/// How much wider the fixed view is at a car's top speed than standing (#39).
+pub const SPEED_PULL: f32 = 0.3;
+
+/// The share of the pull a car at `speed` (m/s, either way) asks for: none at a crawl, all of it
+/// from about 70 km/h.
+pub fn speed_pull_of(speed: f32) -> f32 {
+    let t = ((speed.abs() - 4.0) / 16.0).clamp(0.0, 1.0);
+    1.0 + SPEED_PULL * t * t * (3.0 - 2.0 * t)
 }
 
 /// The yaw `u` (0..1) of the way through a turn from `from` to `to`: slow out, slow in, and
@@ -204,7 +217,7 @@ impl IsoCamera {
     /// A camera at rest at `angle` (0..4; a fraction is that far through the turn to the next
     /// angle and stays there until turned: for pictures).
     pub fn new(angle: f32, zoom: f32, focus: Vec3) -> Self {
-        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, behind: false, blend: 0.0, fixed_yaw: yaw_of(angle), look_yaw: yaw_of(angle), held: false }
+        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, behind: false, blend: 0.0, fixed_yaw: yaw_of(angle), look_yaw: yaw_of(angle), held: false, speed_pull: 1.0 }
     }
 
     /// Switch to the other view: the camera sets off for it ([`Self::step`] moves it). Into first
@@ -306,10 +319,23 @@ impl IsoCamera {
         (self.blend > 0.0).then(|| self.lens_at(self.eased()).1)
     }
 
+    /// Ease the speed pull toward what a car at `speed` asks for (`None`: on foot, back to 1)
+    /// over `dt` seconds: out slowly as the car gets going, in a little faster as it stops. Says
+    /// whether it moved (the projection is then set again).
+    pub fn pull_toward(&mut self, speed: Option<f32>, dt: f32) -> bool {
+        let want = speed.map_or(1.0, speed_pull_of);
+        let rate = if want > self.speed_pull { 0.6 } else { 1.0 };
+        let next = self.speed_pull + (want - self.speed_pull) * (dt * rate).min(1.0);
+        let next = if (next - want).abs() < 1e-3 { want } else { next };
+        let moved = next != self.speed_pull;
+        self.speed_pull = next;
+        moved
+    }
+
     /// The projection as the camera is now.
     pub fn projection(&self) -> Projection {
         Projection::custom(match self.boom() {
-            None => Lens::Flat(OrthographicProjection { scaling_mode: ScalingMode::FixedVertical { viewport_height: self.zoom }, near: NEAR, far: FAR, ..OrthographicProjection::default_3d() }),
+            None => Lens::Flat(OrthographicProjection { scaling_mode: ScalingMode::FixedVertical { viewport_height: self.zoom * self.speed_pull }, near: NEAR, far: FAR, ..OrthographicProjection::default_3d() }),
             // (A perspective lens draws to any distance; `far` is only where it stops looking for things to draw.)
             Some(boom) => Lens::Deep(PerspectiveProjection { fov: self.lens_at(self.eased()).0, near: (boom - SHOULDER_FAR).max(NEAR), far: boom + SHOULDER_FAR, ..default() }),
         })
@@ -379,7 +405,7 @@ impl IsoCamera {
     /// Metres of world top to bottom of the screen where the survivor stands, in either view.
     pub fn view_metres(&self) -> f32 {
         match self.boom() {
-            None => self.zoom,
+            None => self.zoom * self.speed_pull,
             Some(boom) => 2.0 * boom.max(1.0) * (self.lens_at(self.eased()).0 * 0.5).tan(),
         }
     }
@@ -526,6 +552,7 @@ pub fn bloom() -> Bloom {
     Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rotate_and_zoom(
     keys: Res<ButtonInput<KeyCode>>,
     mut wheel: MessageReader<MouseWheel>,
@@ -539,6 +566,7 @@ fn rotate_and_zoom(
     motion: Res<AccumulatedMouseMotion>,
     lock: Res<PointerLock>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    me: Option<Res<crate::player::LocalPlayer>>,
     pad: Option<Res<crate::pad::Pad>>,
     mut turned: Local<usize>,
     mut viewed: Local<usize>,
@@ -594,6 +622,11 @@ fn rotate_and_zoom(
     if cam.turning() {
         cam.advance(time.delta_secs());
     }
+    // At the wheel the view widens with speed (#39); a picture keeps its zoom.
+    let speed = me.as_ref().and_then(|m| m.car).map(|c| c.curr.speed).filter(|_| !options.offscreen());
+    if cam.pull_toward(speed, time.delta_secs()) {
+        *projection = cam.projection();
+    }
     let mut zoom = cam.zoom;
     for ev in wheel.read() {
         zoom = (zoom * (1.0 - ev.y.clamp(-3.0, 3.0) * 0.08)).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -608,12 +641,14 @@ fn rotate_and_zoom(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn follow(
     time: Res<Time>,
     options: Res<Options>,
     shake: Res<CameraShake>,
     view: Res<crate::player::ViewFloor>,
     me: Option<Res<crate::player::LocalPlayer>>,
+    link: Option<Res<crate::server_link::ServerLink>>,
     mut player: Query<(&Transform, &Player, &mut Visibility), Without<IsoCamera>>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
 ) {
@@ -621,7 +656,9 @@ fn follow(
     let cam = &mut *cam;
     // Our own survivor is hidden in first person, and at the wheel of a car (the car is drawn).
     if let Ok((.., mut shown)) = player.single_mut() {
-        let driving = me.as_ref().is_some_and(|m| m.car.is_some());
+        // The car we predict, or (a picture of a save, where nothing is predicted) the snapshot's
+        // word that we sit at a wheel: else the body sitting in the seat shows through the roof.
+        let driving = me.as_ref().is_some_and(|m| m.car.is_some() || link.as_ref().is_some_and(|l| m.id != 0 && l.curr.vehicles.iter().any(|v| v.driver == m.id)));
         let want = if cam.too_close() || driving { Visibility::Hidden } else { Visibility::Inherited };
         if *shown != want {
             *shown = want;
@@ -733,6 +770,15 @@ mod tests {
     /// First person: the camera starts behind the survivor whichever way he faces, W is the way
     /// it looks, the mouse turns it the way it moves, and back in the fixed view it settles on
     /// the nearest of the four angles.
+    #[test]
+    fn the_camera_pulls_back_with_speed() {
+        assert_eq!(speed_pull_of(0.0), 1.0);
+        assert_eq!(speed_pull_of(4.0), 1.0, "town speeds: no change");
+        assert!((speed_pull_of(25.0) - (1.0 + SPEED_PULL)).abs() < 1e-6);
+        assert_eq!(speed_pull_of(-12.0), speed_pull_of(12.0), "reversing too");
+        assert!(speed_pull_of(8.0) < speed_pull_of(12.0));
+    }
+
     #[test]
     fn first_person_is_at_the_eyes_and_turns_with_the_mouse() {
         for k in 0..16 {

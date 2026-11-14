@@ -72,10 +72,18 @@ pub enum Cue {
     Reload,
     /// A light switch flicked.
     LightSwitch,
+    /// Cars (stage 5, #39): a running engine (a loop, its pitch and level by the speed), the
+    /// engine starting, the horn, a crash, a car door, and the radio's static between stations.
+    Engine,
+    EngineStart,
+    Horn,
+    CarCrash,
+    CarDoor,
+    RadioStatic,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 31] = [
+    pub const ALL: [Cue; 37] = [
         Cue::FootstepHard,
         Cue::FootstepSoft,
         Cue::Shuffle,
@@ -107,6 +115,12 @@ impl Cue {
         Cue::Gunshot,
         Cue::Reload,
         Cue::LightSwitch,
+        Cue::Engine,
+        Cue::EngineStart,
+        Cue::Horn,
+        Cue::CarCrash,
+        Cue::CarDoor,
+        Cue::RadioStatic,
     ];
 
     /// The ambience loops, played for as long as the game runs at a volume that follows where you are.
@@ -601,11 +615,13 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<SoundCount>()
             .insert_resource(Dice(0x2545_F491_4F6C_DD1D))
             .insert_resource(Listener { pos: Vec2::ZERO, right: Vec2::X, asleep: false, indoors: false })
+            .init_resource::<CarTrack>()
+            .add_message::<crate::music::RadioTuned>()
             .add_systems(Startup, load_bank)
             .add_systems(Update, toggle_mute)
             .add_systems(
                 PostUpdate,
-                (listen, footsteps, zombie_voices, world_events, switch_clicks, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
+                (listen, footsteps, zombie_voices, world_events, switch_clicks, car_sounds, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
             );
     }
 }
@@ -953,6 +969,103 @@ fn ambience(
     }
 }
 
+/// The running engine heard, as one loop: the loudest car's, by its speed.
+#[derive(Component)]
+struct EngineHum {
+    level: f32,
+}
+
+/// What each car was at the last frame, to hear it change: engine on, speed, driver.
+#[derive(Resource, Default)]
+struct CarTrack(HashMap<u32, (bool, f32, u32)>);
+
+/// A speed lost in one frame over this (m/s) is a crash.
+const CRASH_DROP: f32 = 4.0;
+
+/// The engine loop for the running cars about `ear`: how loud (0..1, before the cue's volume:
+/// ours in full, others falling off with the square of the distance to `reach`) and how fast it
+/// plays (the engine revving with the speed), from the loudest one. None with no engine running.
+pub fn engine_note(cars: &[crate::vehicles_render::DrawnCar], ear: Vec2, reach: f32) -> Option<(f32, f32)> {
+    cars.iter()
+        .filter(|c| c.engine_on)
+        .map(|c| {
+            let near = if c.ours { 1.0 } else { (1.0 - c.pos.distance(ear) / reach).max(0.0).powi(2) };
+            (near * (0.55 + 0.45 * (c.speed.abs() / 15.0).min(1.0)), (0.7 + 0.075 * c.speed.abs()).min(2.2))
+        })
+        .filter(|(g, _)| *g > 0.0)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+/// Cars' sounds: the engine loop, an engine starting, our horn, crashes, car doors as drivers get
+/// in and out, and the radio's static.
+#[allow(clippy::too_many_arguments)]
+fn car_sounds(
+    mut commands: Commands,
+    time: Res<Time>,
+    ear: Res<Listener>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    local: Res<LocalPlayer>,
+    link: Res<ServerLink>,
+    drawn: Option<Res<crate::vehicles_render::DrawnCars>>,
+    bank: Res<SoundBank>,
+    settings: Res<AudioSettings>,
+    mut voices: ResMut<Assets<Voice>>,
+    mut hum: Query<(&mut EngineHum, Option<&mut AudioSink>)>,
+    mut tuned: MessageReader<crate::music::RadioTuned>,
+    mut track: ResMut<CarTrack>,
+    mut queue: ResMut<Queue>,
+) {
+    for _ in tuned.read() {
+        queue.around(Cue::RadioStatic, 0.0, 1.0);
+    }
+    if local.car.is_some() && keys.as_ref().is_some_and(|k| crate::keys::just_pressed(k, crate::keys::Action::Horn)) {
+        queue.around(Cue::Horn, 0.0, 1.0);
+    }
+    let cars: &[crate::vehicles_render::DrawnCar] = drawn.as_ref().map_or(&[], |d| &d.0);
+    let mut seen = HashMap::with_capacity(cars.len());
+    for c in cars {
+        let driver = link.curr.vehicles.iter().find(|v| v.id == c.id).map_or(0, |v| v.driver);
+        if let Some(&(was_on, was_speed, was_driver)) = track.0.get(&c.id)
+            && c.shown
+        {
+            if c.engine_on && !was_on {
+                queue.at(Cue::EngineStart, c.pos, 1.0);
+            }
+            if was_speed.abs() - c.speed.abs() > CRASH_DROP && c.speed.abs() < was_speed.abs() * 0.6 {
+                queue.at(Cue::CarCrash, c.pos, ((was_speed.abs() - c.speed.abs()) / 10.0).clamp(0.4, 1.0));
+            }
+            if driver != was_driver {
+                queue.at(Cue::CarDoor, c.pos, 1.0);
+            }
+        }
+        seen.insert(c.id, (c.engine_on, c.speed, driver));
+    }
+    track.0 = seen;
+    // The engine loop: made once, then only its level and pitch change.
+    let def = bank.def(Cue::Engine);
+    let note = engine_note(cars, ear.pos, def.reach);
+    if hum.is_empty() {
+        if note.is_some() {
+            let voice = Voice { clip: bank.clips[&Cue::Engine][0].clone(), left: 1.0, right: 1.0, speed: 1.0, muffled: false, looped: true };
+            let start = PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(0.0), ..default() };
+            commands.spawn((AudioPlayer(voices.add(voice)), start, EngineHum { level: 0.0 }));
+        }
+        return;
+    }
+    let (gain, speed) = note.unwrap_or((0.0, 0.7));
+    let ease = (time.delta_secs() * 6.0).min(1.0);
+    let sleep = if ear.asleep { 0.35 } else { 1.0 };
+    for (mut h, sink) in &mut hum {
+        h.level += (gain * def.volume - h.level) * ease;
+        if let Some(mut sink) = sink {
+            sink.set_volume(Volume::Linear(h.level * settings.master() * sleep));
+            if (sink.speed() - speed).abs() > 0.01 {
+                sink.set_speed(sink.speed() + (speed - sink.speed()) * ease);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flush(
     mut commands: Commands,
@@ -1130,6 +1243,22 @@ mod tests {
         assert!(r > l * 2.0);
         assert_eq!(pan_gains(0.0).0, pan_gains(0.0).1);
         assert!((pan_gains(0.0).0 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_engine_heard_is_the_loudest_and_revs_with_speed() {
+        use crate::vehicles_render::DrawnCar;
+        let car = |id, x: f32, speed, on, ours| DrawnCar { id, pos: Vec2::new(x, 0.0), heading: 0.0, speed, engine_on: on, braking: false, ours, shown: true, length: 4.4, width: 1.8 };
+        assert_eq!(engine_note(&[car(1, 5.0, 0.0, false, false)], Vec2::ZERO, 45.0), None, "engine off: nothing");
+        assert_eq!(engine_note(&[car(1, 60.0, 0.0, true, false)], Vec2::ZERO, 45.0), None, "out of reach");
+        let (near, _) = engine_note(&[car(1, 10.0, 0.0, true, false)], Vec2::ZERO, 45.0).unwrap();
+        let (far, _) = engine_note(&[car(1, 30.0, 0.0, true, false)], Vec2::ZERO, 45.0).unwrap();
+        assert!(near > far);
+        let (_, idle) = engine_note(&[car(1, 0.0, 0.0, true, true)], Vec2::ZERO, 45.0).unwrap();
+        let (_, fast) = engine_note(&[car(1, 0.0, 15.0, true, true)], Vec2::ZERO, 45.0).unwrap();
+        assert!(fast > idle);
+        let (ours, _) = engine_note(&[car(1, 40.0, 0.0, true, true), car(2, 20.0, 0.0, true, false)], Vec2::ZERO, 45.0).unwrap();
+        assert!((ours - 0.55).abs() < 1e-6, "our own car is heard in full wherever the ear is");
     }
 
     #[test]

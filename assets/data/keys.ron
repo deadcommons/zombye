@@ -29,6 +29,8 @@
     refuel: ["Shift+E"],
     // At the wheel: the horn (on foot H is the Health screen).
     horn: ["H"],
+    // At the wheel: the car radio, off and through its stations (on foot R reloads).
+    radio: ["R"],
 
     // Fighting
     shove: ["Space"],
