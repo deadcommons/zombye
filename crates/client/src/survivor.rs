@@ -731,7 +731,9 @@ fn animate_survivors(
             }
             Look::Model(js) => {
                 let Some(model) = &model else { continue };
-                let pose = model.compose(a, now, category, armed);
+                let mut pose = model.compose(a, now, category, armed);
+                // Each hand turned to hold what is drawn in it (#35).
+                model.hold(&mut pose, [0, 1].map(|hand| holding(&link, &join, a.player, hand).map(|(_, _, hold)| hold)));
                 for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
@@ -1385,6 +1387,22 @@ fn busy_with(link: &ServerLink, join: &JoinInfo, player: u32) -> Option<u16> {
     }
 }
 
+/// What is drawn in hand `hand` (0 right, 1 left) of survivor `player` now: the item, whether it is
+/// the thing in use (`busy_with`, the left hand's) and how the hand holds it. Not a bag, which hangs
+/// from the hand (the outfit draws those).
+fn holding(link: &ServerLink, join: &JoinInfo, player: u32, hand: u8) -> Option<(u16, bool, crate::survivor_model::Hold)> {
+    use crate::survivor_model::Hold;
+    let busy = if hand == 1 { busy_with(link, join, player) } else { None };
+    let item = busy.or_else(|| {
+        link.curr.players.iter().find(|p| p.id == player && !p.dead)?;
+        let outfit = link.curr.outfits.iter().find(|o| o.id == player)?;
+        if hand == 0 { outfit.hand } else { outfit.off_hand }
+    })?;
+    let def = join.items.get(item as usize).filter(|d| d.bag.is_none())?;
+    let gun = def.weapon.as_ref().and_then(|id| join.weapons.iter().find(|w| &w.id == id)).is_some_and(|w| w.ranged.is_some());
+    Some((item, busy.is_some(), if gun { Hold::Gun } else { Hold::Handle }))
+}
+
 /// Show what each survivor holds in either hand (from snapshots; while eating, drinking, taking a
 /// pill or reloading, the thing in use in the left hand): see `WeaponLooks::in_hand`.
 fn show_held_items(
@@ -1392,16 +1410,22 @@ fn show_held_items(
     join: Res<JoinInfo>,
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
-    mut held: Query<(Entity, &HeldItem, &mut Visibility, Option<&Children>)>,
+    model: Option<Res<SurvivorModel>>,
+    mut held: Query<(Entity, &HeldItem, &mut Transform, &mut Visibility, Option<&Children>)>,
     mut shapes: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldItem>>,
 ) {
     let Some(looks) = looks else { return };
-    for (e, h, mut vis, children) in &mut held {
-        let alive = link.curr.players.iter().any(|p| p.id == h.player && !p.dead);
-        let outfit = link.curr.outfits.iter().find(|o| o.id == h.player).filter(|_| alive);
-        let busy = if h.hand == 1 { busy_with(&link, &join, h.player) } else { None };
-        let item = busy.or_else(|| outfit.and_then(|o| if h.hand == 0 { o.hand } else { o.off_hand }));
-        let look = item.and_then(|i| looks.in_hand(i));
+    for (e, h, mut frame, mut vis, children) in &mut held {
+        let holding = holding(&link, &join, h.player, h.hand);
+        let busy = holding.and_then(|(item, busy, _)| busy.then_some(item));
+        let look = holding.and_then(|(item, ..)| looks.in_hand(item));
+        // On the grip frame for the way the hand holds it (the body's; the grey-box has the one).
+        if let (Some(model), Some((.., hold))) = (&model, holding) {
+            let grip = model.grip_frame(h.hand as usize, hold);
+            if *frame != grip {
+                *frame = grip;
+            }
+        }
         let want = if look.is_some() { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;

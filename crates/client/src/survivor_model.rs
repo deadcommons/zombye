@@ -274,6 +274,55 @@ enum Src {
     Follow,
 }
 
+/// How a hand holds a thing: a handle across the palm, the thing running out past the thumb (a bat,
+/// a knife, a bottle), or a gun's grip, the barrel running on the way the fingers point.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hold {
+    Handle = 0,
+    Gun = 1,
+}
+
+/// How far off the socket, out of the palm, the grip is (metres): the socket is in the middle of
+/// the hand, so a handle drawn there ran through it; its middle is this far out, a handle's
+/// half-thickness off the palm's skin.
+const PALM: f32 = 0.04;
+
+/// One hand and its grips (#35). A held thing keeps pointing where the clips and the grey-box point
+/// it (model-forward in the first frame of the idle, its top up: the clips are made to that), and the
+/// **hand is turned to hold it**: per [`Hold`], the grip frame on the hand's bone (the grip at the
+/// origin on the palm, +Z along the thing, +Y its top) and the turn of the bone that lays the palm on
+/// it. The hand's shape is read off its socket in the rest pose, on the socket's axes (the model's,
+/// turned by the socket's rotation): the fingers point along X away from the body, the palm faces
+/// down (-Y), the thumb is forward (+Z), a T-pose's. Before, the frame was the model's axes on the
+/// hand as the idle's first frame happens to have it (the bought idle's right hand: 57 degrees off
+/// the knuckles' line), so everything held ran through the hand.
+struct Hand {
+    bone: usize,
+    /// Per [`Hold`]: the grip frame on the bone, and the bone's turn.
+    grips: [(Transform, Quat); 2],
+}
+
+impl Hand {
+    fn new(body: &Body, retarget: &Retarget, bone: &str, socket: &str, side: f32) -> Self {
+        let rig = &body.rig;
+        let s = body.sockets.get(socket);
+        let bone = rig.find(bone).or(s.map(|s| s.bone)).unwrap_or(0);
+        let rest = rig.inverse_bind[bone].inverse().to_scale_rotation_translation().1;
+        let (offset, axes) = s.map_or((Vec3::ZERO, Quat::IDENTITY), |s| (s.offset, s.rotation));
+        // A handle in the hand at rest, on the socket's axes: along the knuckles to the thumb (+Z),
+        // its top to the wrist, so +X is out of the right palm and into the left.
+        let top = Vec3::X * -side;
+        let handle = axes * Quat::from_mat3(&Mat3::from_cols(top.cross(Vec3::Z), top, Vec3::Z));
+        let at = rest.inverse() * (offset + axes * Vec3::NEG_Y * PALM);
+        let grips = [0.0, std::f32::consts::FRAC_PI_2].map(|gun: f32| {
+            // A gun's barrel (+Z) lies along the fingers, its top to the thumb: a quarter turn about X.
+            let frame = rest.inverse() * handle * Quat::from_rotation_x(gun);
+            (Transform::from_translation(at).with_rotation(frame), (retarget.ref_global[bone].inverse() * frame.inverse()).normalize())
+        });
+        Self { bone, grips }
+    }
+}
+
 /// Grey-box poses onto the skeleton.
 struct Retarget {
     src: Vec<Src>,
@@ -413,14 +462,10 @@ pub struct SurvivorModel {
     feet: Vec<usize>,
     /// A light texel of the body's texture, for tinting (see [`light_uv`]).
     light_uv: Option<[f32; 2]>,
-    hand_r: usize,
-    /// The left hand's bone, where the off hand's item is held.
-    hand_l: usize,
+    /// The hands (right, left) and how each holds a thing: see [`Hand`].
+    hands: [Hand; 2],
     /// Per hand (right, left): its bone and its grip in the rest pose, for the hang joints.
     hang: [(usize, Vec3); 2],
-    weapon_frame: Transform,
-    /// The off hand's grip frame on `hand_l`, as `weapon_frame` is the right's.
-    off_frame: Transform,
     bare: Handle<Mesh>,
     body_material: Handle<StandardMaterial>,
     outfit_material: Handle<StandardMaterial>,
@@ -719,16 +764,8 @@ impl SurvivorModel {
         let flinching = (0..rig.len()).filter_map(|b| if let Src::Grey(g) = retarget.src[b] { UPPER.contains(&g).then_some((b, g)) } else { None }).collect();
         let feet_region = REGIONS.iter().position(|r| *r == BodyPart::Feet).unwrap() as u8;
         let feet = (0..body.mesh.vertices()).filter(|&v| body.regions[v] == feet_region).collect();
-        // The weapon's grip on the `hand_r` socket, turned so it points as the grey-box's does.
-        let hand_r = rig.find("RightHand").or_else(|| body.sockets.get("hand_r").map(|s| s.bone)).unwrap_or(0);
-        let rest_rot = rig.inverse_bind[hand_r].inverse().to_scale_rotation_translation().1;
-        let grip = body.sockets.get("hand_r").map_or(Vec3::ZERO, |s| rest_rot.inverse() * s.offset);
-        let weapon_frame = Transform::from_translation(grip).with_rotation(retarget.ref_global[hand_r].inverse() * Quat::IDENTITY);
-        // The off hand's the same way, on `hand_l` (#35): what it holds points as the right hand's does.
-        let hand_l = rig.find("LeftHand").or_else(|| body.sockets.get("hand_l").map(|s| s.bone)).unwrap_or(0);
-        let rest_rot_l = rig.inverse_bind[hand_l].inverse().to_scale_rotation_translation().1;
-        let grip_l = body.sockets.get("hand_l").map_or(Vec3::ZERO, |s| rest_rot_l.inverse() * s.offset);
-        let off_frame = Transform::from_translation(grip_l).with_rotation(retarget.ref_global[hand_l].inverse());
+        // Each hand's grip, on its palm (#35): see `Hand`.
+        let hands = [("RightHand", "hand_r", -1.0), ("LeftHand", "hand_l", 1.0)].map(|(bone, socket, side)| Hand::new(&body, &retarget, bone, socket, side));
         // The texture's own colours times the vertex colours (white, or a tint).
         let texture = body.texture.as_ref().and_then(|(bytes, ext)| match crate::zvat::texture_image(bytes, ext) {
             Ok(i) => Some(i),
@@ -774,11 +811,8 @@ impl SurvivorModel {
             all: (0..rig.len()).collect(),
             feet,
             light_uv: light,
-            hand_r,
-            hand_l,
+            hands,
             hang,
-            weapon_frame,
-            off_frame,
             retarget,
             bare: Handle::default(),
             body_material,
@@ -885,6 +919,20 @@ impl SurvivorModel {
         for &b in &self.spine_base {
             pose.r[b] = hips.inverse() * yaw.inverse() * hips * pose.r[b];
         }
+    }
+
+    /// Turn the hands (right, left) of `pose` to hold what they hold: see [`Hand`].
+    pub fn hold(&self, pose: &mut RigPose, holds: [Option<Hold>; 2]) {
+        for (hand, hold) in self.hands.iter().zip(holds) {
+            if let Some(hold) = hold {
+                pose.r[hand.bone] = (pose.r[hand.bone] * hand.grips[hold as usize].1).normalize();
+            }
+        }
+    }
+
+    /// The grip frame of hand `hand` (0 right, 1 left) on its bone, holding that way.
+    pub fn grip_frame(&self, hand: usize, hold: Hold) -> Transform {
+        self.hands[hand].grips[hold as usize].0
     }
 
     /// The pose of survivor `a` now: see the module docs.
@@ -1260,8 +1308,9 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
     // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
     let body = commands.spawn((Mesh3d(model.bare.clone()), MeshMaterial3d(model.body_material.clone()), skin.clone(), NoFrustumCulling, Transform::default(), ChildOf(root))).id();
     let outfit = commands.spawn((MeshMaterial3d(model.outfit_material.clone()), skin, NoFrustumCulling, Transform::default(), Visibility::Hidden, ChildOf(root))).id();
-    commands.spawn((HeldItem { player, hand: 0 }, model.weapon_frame, Visibility::Hidden, ChildOf(joints[model.hand_r])));
-    commands.spawn((HeldItem { player, hand: 1 }, model.off_frame, Visibility::Hidden, ChildOf(joints[model.hand_l])));
+    for (k, hand) in model.hands.iter().enumerate() {
+        commands.spawn((HeldItem { player, hand: k as u8 }, hand.grips[Hold::Handle as usize].0, Visibility::Hidden, ChildOf(joints[hand.bone])));
+    }
     let ring = if local { model.ring_me.clone() } else { model.ring_other.clone() };
     let mut ring = commands.spawn((Mesh3d(model.ring.clone()), MeshMaterial3d(ring), Transform::from_xyz(0.0, 0.02, 0.0), NotShadowCaster, ChildOf(root)));
     if !local {
@@ -1381,6 +1430,33 @@ mod tests {
         let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
         face_forward(&mut body);
         (body, models.join("wearables"))
+    }
+
+    /// What is held lies on the palm, and holding it doesn't turn it (#35): at rest a handle's grip is
+    /// `PALM` under the socket, along the knuckles to the thumb (+Z), its top to the wrist; a gun's
+    /// barrel is on the way the fingers point; and with the hand turned to hold it, the thing still
+    /// points model-forward, top up, in the first frame of the idle (what the clips are made to).
+    #[test]
+    fn a_hand_holds_on_its_palm() {
+        let (body, _) = shipped_body();
+        let reference = body.clip("idle").unwrap().frames[0].clone();
+        let rt = Retarget::new(&body, reference.clone());
+        for (bone, socket, side) in [("RightHand", "hand_r", -1.0), ("LeftHand", "hand_l", 1.0)] {
+            let hand = Hand::new(&body, &rt, bone, socket, side);
+            let (_, at) = body.socket_frame(socket).unwrap();
+            let rest = body.rig.inverse_bind[hand.bone].inverse();
+            let fingers = Vec3::X * side;
+            for (hold, along, top) in [(Hold::Handle, Vec3::Z, -fingers), (Hold::Gun, fingers, Vec3::Z)] {
+                let (frame, turn) = hand.grips[hold as usize];
+                let m = rest * frame.to_matrix();
+                assert!((m.transform_point3(Vec3::ZERO) - (at.transform_point3(Vec3::ZERO) - Vec3::Y * PALM)).length() < 1e-4, "{socket} {hold:?}: not on the palm");
+                assert!((m.transform_vector3(Vec3::Z) - along).length() < 1e-4 && (m.transform_vector3(Vec3::Y) - top).length() < 1e-4, "{socket} {hold:?}: turned");
+                let mut pose = reference.clone();
+                pose.r[hand.bone] *= turn;
+                let held = body.rig.globals(&pose)[hand.bone].to_scale_rotation_translation().1 * frame.rotation;
+                assert!((held * Vec3::Z - Vec3::Z).length() < 1e-3 && (held * Vec3::Y - Vec3::Y).length() < 1e-3, "{socket} {hold:?}: holding it turned it");
+            }
+        }
     }
 
     /// The weapon shove on the body (no clip of its own: the grey-box's pose carried over) pushes with

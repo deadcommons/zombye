@@ -1,8 +1,8 @@
 //! How each item sits in a survivor's hand (#35): `assets/data/held.ron`, with the release models'
 //! `held/grips.ron` over it (its grips go with its models).
 //!
-//! A held item is drawn in the hand's grip frame: its grip at the origin, pointing along +Z, its top
-//! +Y (`items_render::WeaponLooks::in_hand`). A grip moves, turns and scales the item in that frame,
+//! A held item is drawn in the hand's grip frame: its grip at the origin on the palm, pointing along
+//! +Z, its top +Y (`items_render::WeaponLooks::in_hand`; the frame is `survivor_model::Hand`'s). A grip moves, turns and scales the item in that frame,
 //! after the item is put there, so a model that sits wrong in the fist is put right with data.
 
 use std::collections::BTreeMap;
@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 use bevy::prelude::*;
 use serde::Deserialize;
 
-/// One item's grip: metres to move it in the hand's frame (+Z along the item, +Y its top, +X to
-/// the right of the fist), degrees to turn it about the hand's X, Y and Z (in that order), and how
+/// One item's grip: metres to move it in the hand's frame (+Z along the item, +Y its top, +X out
+/// of the right palm and out of the back of the left hand), degrees to turn it about the hand's X, Y and Z (in that order), and how
 /// much to scale it.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
@@ -98,9 +98,10 @@ pub fn has(id: &str) -> bool {
     GRIPS.get_or_init(shipped).contains_key(id)
 }
 
-/// Food being eaten without a grip of its own: out toward the thumb, in front of the mouth rather
-/// than in the face, and a little bigger so it reads (tuned on the tin of beans, #35).
-pub const EATING: Grip = Grip { offset: (0.08, 0.0, -0.02), turn: (0.0, 0.0, 0.0), scale: 1.3 };
+/// Food being eaten without a grip of its own: on the back of the left hand, in front of the mouth
+/// rather than in the face (the eating clip lays the palm on the mouth), and a little bigger so it
+/// reads (tuned on the tin of beans, #35).
+pub const EATING: Grip = Grip { offset: (0.12, 0.0, -0.02), turn: (0.0, 0.0, 0.0), scale: 1.3 };
 
 #[cfg(test)]
 mod tests {

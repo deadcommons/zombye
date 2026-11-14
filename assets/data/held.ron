@@ -1,8 +1,12 @@
 // How items sit in a survivor's hand (read by the client: crates/client/src/held.rs).
 //
-// Anything held is drawn in the hand's grip frame: the grip at the origin, the item pointing along
-// +Z, its top +Y, +X to the right of the fist. A held model is made that way; an item with only a
-// ground model, or none, is laid along +Z and centred in the fist. A grip here then moves the item
+// Anything held is drawn in the hand's grip frame: the grip at the origin, on the palm (4 cm out
+// of the hand's middle, so a handle lies on the palm's skin, not through the hand); the item
+// pointing along +Z, out past the thumb; its top +Y, toward the wrist; so +X is out of the right
+// palm, and for the left hand out of its back. A gun is the same turned a quarter: its barrel on
+// the way the fingers point, its top to the thumb. The hand is turned to hold it that way
+// (`survivor_model::Hand`). A held model is made that way; an item with only a ground model, or
+// none, is laid along +Z and centred on the grip. A grip here then moves the item
 // in that frame (`offset`, metres), turns it (`turn`, degrees about X, then Y, then Z) and scales
 // it (`scale`), so an item that sits wrong is put right without code. Every field is optional.
 //
@@ -12,8 +16,9 @@
 //   "kitchen_knife": (offset: (0.0, 0.0, -0.02), turn: (0.0, 0.0, 90.0), scale: 1.0),
 //
 // Food being eaten with no entry here is moved out of the face by `held::EATING`; an entry
-// replaces that (these two were tuned against the eating clip).
+// replaces that (these two were tuned against the eating clip, which lays the left palm on the
+// mouth: on the palm the food is inside the head, so it is drawn on the back of the hand, +X).
 {
-    "tinned_beans": (offset: (0.08, 0.0, 0.0), scale: 1.3),
-    "chocolate_bar": (offset: (0.08, 0.0, -0.04), scale: 1.3),
+    "tinned_beans": (offset: (0.12, 0.0, 0.0), scale: 1.3),
+    "chocolate_bar": (offset: (0.12, 0.0, -0.04), scale: 1.3),
 }
