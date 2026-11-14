@@ -13,6 +13,8 @@
 #                    release-characters, release-anim and release-audio go into zombye.pak, and its
 #                    release-brand/official_servers.ron becomes the build's official server list.
 #                    Without it (or with ZOMBYE_NO_PACK=1) the build has this repo's own art only.
+#                    Its release-brand pictures go beside the game (window icon, logo) and its
+#                    zombye.ico / zombye.icns / icon.png become the app's icon (#76).
 #   ZOMBYE_PACK_KEY  the key the pack is scrambled with (compiled into the game). Needed whenever the
 #                    bought art is packed: the built-in key is in the public source, so a pack made with
 #                    it can be unpacked by anyone. Keep it out of this repo and its history.
@@ -69,6 +71,13 @@ case "$platform" in
     features="--features zombye-client/windows-gui"
     exe=zombye.exe
     server=zombye-server.exe
+    # The .exe's icon, embedded by crates/client/build.rs (the icon file never comes into this repo).
+    if [ -f "$art/release-brand/zombye.ico" ]; then
+      export ZOMBYE_WINDOWS_ICON="$art/release-brand/zombye.ico"
+      echo "exe icon: $ZOMBYE_WINDOWS_ICON"
+    else
+      echo "exe icon: none ($art/release-brand/zombye.ico isn't there)"
+    fi
     ;;
   *) echo "unknown platform $platform (linux, windows or mac)" >&2; exit 2 ;;
 esac
@@ -123,6 +132,32 @@ if [ -f "$art/release-brand/official_servers.ron" ]; then
 else
   echo "official servers: none ($art/release-brand/official_servers.ron isn't there): the build lists no official server"
 fi
+# The brand's pictures (window icon, logo, wordmark, the Z), read as release-brand beside the game
+# (crates/client/src/release_brand.rs), and the app's icon for each platform.
+brand="$art/release-brand"
+if ls "$brand"/*.png >/dev/null 2>&1; then
+  mkdir -p "$resdir/release-brand"
+  cp "$brand"/*.png "$resdir/release-brand/"
+  echo "brand: $brand"
+  if [ "$platform" = mac ] && [ -f "$brand/zombye.icns" ]; then
+    cp "$brand/zombye.icns" "$resdir/zombye.icns"
+  fi
+  if [ "$platform" = linux ] && [ -f "$brand/icon.png" ]; then
+    cp "$brand/icon.png" "$stage/zombye.png"
+    cat > "$stage/zombye.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Zombye
+Comment=Zombie survival
+Exec=zombye
+Icon=zombye
+Terminal=false
+Categories=Game;
+DESKTOP
+  fi
+else
+  echo "brand: none ($brand has no pictures): no logo or icon in this build"
+fi
 cp tools/release/README-playtest.txt "$stage/README.txt"
 
 # The bought art, packed.
@@ -141,6 +176,8 @@ fi
 
 if [ "$platform" = mac ]; then
   version="$(date -u +%Y.%m.%d)"
+  icon_key=""
+  [ -f "$resdir/zombye.icns" ] && icon_key="<key>CFBundleIconFile</key><string>zombye</string>"
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -155,6 +192,7 @@ if [ "$platform" = mac ]; then
   <key>CFBundleVersion</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  $icon_key
 </dict>
 </plist>
 PLIST
