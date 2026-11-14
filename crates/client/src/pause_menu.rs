@@ -74,7 +74,7 @@ impl Plugin for PauseMenuPlugin {
         app.insert_resource(PauseMenu { open: options.pause || options.settings.is_some(), ..default() })
             .add_systems(Startup, spawn)
             // Before every other key handler: while the menu is up the keys are its own.
-            .add_systems(PreUpdate, keys.after(InputSystems).after(crate::settings_ui::capture).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live).run_if(crate::main_menu::layer_down))
+            .add_systems(PreUpdate, keys.in_set(PauseKeys).after(InputSystems).after(crate::settings_ui::capture).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live).run_if(crate::main_menu::layer_down))
             .add_systems(Update, (act, stop_time, draw).chain());
     }
 }
@@ -96,6 +96,10 @@ fn spawn(mut commands: Commands) {
             c.spawn((Panel, Node { width: px(WIDTH), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
         });
 }
+
+/// The pause menu's keys, in `PreUpdate`: what must see Esc before it runs before this.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PauseKeys;
 
 /// Is something up that Esc belongs to first?
 #[allow(clippy::too_many_arguments)]

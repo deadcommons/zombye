@@ -127,12 +127,13 @@ fn read(
     chat: Option<Res<crate::chat::ChatEntry>>,
     find: Option<Res<crate::inventory_ui::Find>>,
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
+    report_box: Option<Res<crate::report::ReportBox>>,
     gamepads: Query<&Gamepad>,
     window: Query<Entity, With<PrimaryWindow>>,
     time: Res<Time>,
     mut out: MessageWriter<KeyboardInput>,
 ) {
-    let typing = chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing) || browser.is_some_and(|b| b.typing());
+    let typing = chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing) || browser.is_some_and(|b| b.typing()) || report_box.is_some_and(|r| r.typing());
     let pad = mode.as_ref().is_some_and(|m| m.pad);
     let up = (pad && typing) || options.osk;
     if up != osk.up {

@@ -384,6 +384,8 @@ pub struct Options {
     pub wheel: Option<String>,
     /// The on-screen keyboard up from the start, for pictures (`--osk`). See `osk.rs`.
     pub osk: bool,
+    /// The F12 box up with this note, for pictures (`--report-box TEXT`). See `report.rs`.
+    pub report_box: Option<String>,
     /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
     /// settings file's, else off). See `film.rs`.
     pub old_look: Option<film::OldLook>,
@@ -671,6 +673,7 @@ impl Options {
             input: value("--input").and_then(|v| pad::InputSetting::parse(&v)),
             wheel: value("--wheel"),
             osk: flag("--osk"),
+            report_box: value("--report-box"),
             old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
