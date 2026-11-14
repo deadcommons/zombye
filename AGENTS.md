@@ -1225,9 +1225,16 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   turns it down. This repo's `music.ron` has no stations (the dial finds only static); the songs come with the
   release audio's `music.ron`. The driver is hidden whole in offscreen pictures too (`camera::follow` asks the
   snapshot who drives, so hair no longer pokes through the roof).
+- **Cars in parts (#66; client only, `furniture_models::PartKind`, `split_worn`, `vehicles_render::part_turn`):** a car
+  model whose wheels, steering wheel and glass are nodes of their own (`wheel_fl`, `wheel_fr`, `wheel_rl`, `wheel_rr`,
+  `steering_wheel`, `glass`: the release models' cars, made so by the art repo's `release-models/build.py`) is drawn as
+  its body with each part a child entity: the wheels roll about their axle (their node's x) by the distance driven, the
+  front ones and the steering wheel (`STEERING_RATIO` 12, about its column, the node's z) turn with the steering, and the
+  glass is see-through (a blended `StandardMaterial`). `parse_glb` now reads the scene's node tree, parents' transforms
+  included. A parked prop of the same model is still merged whole into its chunk, and a model without parts is one mesh
+  as before. A car whose drawn place or speed isn't a number is drawn where the snapshot says and gets no lights (#67).
 - **Not yet:** MCP tools, running players over, damage drawn on the car, more vehicle kinds, a key's car shown on
-  the key, picking locks, spinning and steering wheels, see-through glass and an inside view (the car models need
-  splitting into parts), other cars' horns heard (the snapshot doesn't say), the engine heard from where each car is.
+  the key, picking locks, an inside view, other cars' horns heard (the snapshot doesn't say), the engine heard from where each car is.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
