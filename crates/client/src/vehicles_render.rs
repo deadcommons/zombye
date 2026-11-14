@@ -18,6 +18,10 @@
 //! child of it: the wheels roll by the distance driven, the front ones and the steering wheel turn
 //! with the steering, and the glass is see-through. A parked prop of the same model is still drawn
 //! whole in its chunk's mesh, and a model without parts as one mesh, as before.
+//!
+//! Damage (#68, `car_damage`): a car is drawn by the stage its body and windows are at (scrapes
+//! baked into its colours, cracked or missing glass) and made again when that changes; it sits
+//! lower on flat tyres.
 
 use std::collections::HashMap;
 
@@ -26,6 +30,7 @@ use bevy::prelude::*;
 use zombye_sim::map::Side;
 use zombye_sim::{TICK_DT, VehicleState};
 
+use crate::car_damage;
 use crate::fog::FogState;
 use crate::furniture_models::PartKind;
 use crate::materials::WorldMaterials;
@@ -35,15 +40,17 @@ use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 use crate::world_render::SharedMeshes;
 use crate::zombie_render::lerp_angle;
 
-/// A vehicle's body, by its id.
+/// A vehicle's body, by its id, drawn at this damage stage (`car_damage::stage`).
 #[derive(Component)]
-struct CarBody(u32);
+struct CarBody(u32, u8);
 
 /// How a car moves as drawn this frame, for its wheels and steering wheel.
 #[derive(Component, Default, Clone, Copy)]
 struct CarMotion {
     speed: f32,
     steer: f32,
+    /// How far the body sits down on flat tyres (m): the wheels stay on the ground.
+    sink: f32,
 }
 
 /// A moving part of a car's model, a child of its [`CarBody`]: where it sits on the body, its
@@ -222,10 +229,10 @@ fn follow_remote_cars(link: Res<ServerLink>, join: Res<JoinInfo>, me: Option<Res
     }
 }
 
-/// Each vehicle's meshes, made once (its wear goes by where it was parked): the body, and its
-/// moving parts in their own frames.
+/// Each vehicle's meshes at the damage stage it was last drawn at, made once a stage (its wear
+/// goes by where it was parked): the body, and its moving parts in their own frames.
 #[derive(Resource, Default)]
-struct CarMeshes(HashMap<u32, CarLook>);
+struct CarMeshes(HashMap<u32, (u8, CarLook)>);
 
 #[derive(Clone)]
 struct CarLook {
@@ -233,16 +240,12 @@ struct CarLook {
     parts: Vec<(PartKind, Transform, Handle<Mesh>, f32)>,
 }
 
-/// The see-through glass of cars in parts (made on first use).
-#[derive(Resource, Default)]
-struct GlassMaterial(Option<Handle<StandardMaterial>>);
-
 pub struct VehiclesRenderPlugin;
 
 impl Plugin for VehiclesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CarMeshes>()
-            .init_resource::<GlassMaterial>()
+            .init_resource::<car_damage::Glass>()
             .init_resource::<RemoteCars>()
             .init_resource::<DrawnCars>()
             .add_systems(Startup, spawn_car_lights)
@@ -252,17 +255,25 @@ impl Plugin for VehiclesRenderPlugin {
 }
 
 /// The meshes for vehicle `v`: its prop's model, facing +z (south) about the origin, split into its
-/// body and moving parts when the model has them; else a grey-box.
-fn car_look(v: &zombye_sim::VehicleView, join: &JoinInfo, map: &ClientMap, shared: &SharedMeshes, meshes: &mut Assets<Mesh>) -> Option<CarLook> {
+/// body and moving parts when the model has them; else a grey-box. Its body scraped and its glass
+/// as `stage` says (`car_damage::stage`).
+fn car_look(v: &zombye_sim::VehicleView, stage: u8, join: &JoinInfo, map: &ClientMap, shared: &SharedMeshes, meshes: &mut Assets<Mesh>) -> Option<CarLook> {
     let kind = join.vehicles.kinds.get(v.kind as usize)?;
     let prop = map.0.prop_kinds.iter().find(|p| p.id == kind.prop);
     let model = prop.map_or(kind.prop.as_str(), |p| p.model());
     let models = &shared.furniture;
     // Worn as a prop parked where it was would be: the salt is where it was parked.
     let at = Vec2::new(v.from[0] as f32, v.from[1] as f32);
-    let wear = crate::meshgen::decay::Wear::of(crate::meshgen::decay::look(), &kind.prop, at, models.body_colour(model, at));
+    let (body_stage, glass_stage) = car_damage::stages(stage);
+    let wear = crate::meshgen::decay::Wear::of(crate::meshgen::decay::look(), &kind.prop, at, models.body_colour(model, at)).map(|w| crate::meshgen::decay::Wear { scuffs: car_damage::scuffs(body_stage), ..w });
     if let Some(split) = models.split_worn(model, at, wear.as_ref()) {
-        let parts = split.parts.into_iter().map(|(k, rest, mesh, r)| (k, rest, meshes.add(mesh), r)).collect();
+        let parts = split
+            .parts
+            .into_iter()
+            // Wrecked windows are gone; cracked ones get the cracks laid over them.
+            .filter(|(k, ..)| !(*k == PartKind::Glass && glass_stage >= 3))
+            .map(|(k, rest, mesh, r)| (k, rest, meshes.add(if k == PartKind::Glass { car_damage::with_crack_uvs(mesh) } else { mesh }), r))
+            .collect();
         return Some(CarLook { body: meshes.add(split.body), parts });
     }
     let mut mb = MeshBuilder::default();
@@ -302,7 +313,10 @@ fn turn_car_parts(time: Res<Time>, cars: Query<&CarMotion>, mut parts: Query<(&m
         if matches!(part.kind, PartKind::Wheel { .. }) && m.speed != 0.0 {
             part.rolled = (part.rolled + m.speed * dt / part.radius).rem_euclid(std::f32::consts::TAU);
         }
-        let want = part_turn(part.kind, part.rest, part.rolled, m.steer, part.flip);
+        let mut want = part_turn(part.kind, part.rest, part.rolled, m.steer, part.flip);
+        if matches!(part.kind, PartKind::Wheel { .. }) {
+            want.translation.y += m.sink;
+        }
         if *tf != want {
             *tf = want;
         }
@@ -326,7 +340,7 @@ fn draw_vehicles(
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnCars>,
     // One parameter for both: a system takes at most 16.
-    (mut glass, mut standard): (ResMut<GlassMaterial>, ResMut<Assets<StandardMaterial>>),
+    (mut glass, mut standard, mut images): (ResMut<car_damage::Glass>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
     mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility, &mut Sway, &mut CarMotion)>,
 ) {
     let views = &link.curr.vehicles;
@@ -366,6 +380,12 @@ fn draw_vehicles(
         };
         let kind = join.vehicles.kinds.get(v.kind as usize);
         let wheelbase = kind.map_or(2.6, |k| k.wheelbase);
+        let stage = car_damage::stage(v.parts);
+        let sink = car_damage::tyre_sink(v.parts[car_damage::TYRES]);
+        // Drawn at another stage of damage: made again below.
+        if let Some((e, ..)) = cars.iter().find(|(_, b, ..)| b.0 == v.id && b.1 != stage) {
+            commands.entity(e).despawn();
+        }
         let shown = v.driver == 0 || v.driver == me_id || fog.visibility(pos) > 0.35;
         let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
         let yaw = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading);
@@ -381,18 +401,18 @@ fn draw_vehicles(
             length: kind.map_or(4.4, |k| k.length),
             width: kind.map_or(1.8, |k| k.width),
         };
-        if let Some((_, _, mut t, mut vis, mut sway, mut motion)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {
+        if let Some((_, _, mut t, mut vis, mut sway, mut motion)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id && b.1 == stage) {
             sway.step(now.speed, now.steer, wheelbase, dt);
             if !(sway.roll.is_finite() && sway.pitch.is_finite() && sway.accel.is_finite()) {
                 *sway = Sway::default();
             }
-            let m = CarMotion { speed: now.speed, steer: now.steer };
-            if motion.speed != m.speed || motion.steer != m.steer {
+            let m = CarMotion { speed: now.speed, steer: now.steer, sink };
+            if motion.speed != m.speed || motion.steer != m.steer || motion.sink != m.sink {
                 *motion = m;
             }
             car.braking = now.speed.abs() > 0.5 && sway.accel * now.speed.signum() < -BRAKING;
             drawn.0.push(car);
-            let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw * sway.turn());
+            let tf = Transform::from_xyz(pos.x, map.0.ground(pos) - sink, pos.y).with_rotation(yaw * sway.turn());
             if *t != tf {
                 *t = tf;
             }
@@ -402,32 +422,27 @@ fn draw_vehicles(
             continue;
         }
         let look = match made.0.get(&v.id) {
-            Some(m) => m.clone(),
-            None => {
-                let Some(m) = car_look(v, &join, &map, &shared, &mut meshes) else { continue };
-                made.0.insert(v.id, m.clone());
+            Some((s, m)) if *s == stage => m.clone(),
+            _ => {
+                let Some(m) = car_look(v, stage, &join, &map, &shared, &mut meshes) else { continue };
+                made.0.insert(v.id, (stage, m.clone()));
                 m
             }
         };
         drawn.0.push(car);
-        let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw);
-        let body = commands.spawn((CarBody(v.id), Sway::default(), CarMotion { speed: now.speed, steer: now.steer }, Mesh3d(look.body), MeshMaterial3d(mats.props.clone()), tf, want)).id();
+        let tf = Transform::from_xyz(pos.x, map.0.ground(pos) - sink, pos.y).with_rotation(yaw);
+        let body = commands.spawn((CarBody(v.id, stage), Sway::default(), CarMotion { speed: now.speed, steer: now.steer, sink }, Mesh3d(look.body), MeshMaterial3d(mats.props.clone()), tf, want)).id();
         for (kind, rest, mesh, radius) in look.parts {
             // Its column's way along the car: one pointing back at the driver turns the other way.
             let flip = (rest.rotation * Vec3::Z).z < 0.0;
             let part = CarPart { kind, rest, radius, flip, rolled: 0.0 };
-            let at = part_turn(kind, rest, 0.0, now.steer, flip);
+            let mut at = part_turn(kind, rest, 0.0, now.steer, flip);
+            if matches!(kind, PartKind::Wheel { .. }) {
+                at.translation.y += sink;
+            }
             if kind == PartKind::Glass {
-                let m = glass.0.get_or_insert_with(|| {
-                    standard.add(StandardMaterial {
-                        base_color: Color::srgba(0.55, 0.62, 0.68, 0.3),
-                        alpha_mode: AlphaMode::Blend,
-                        perceptual_roughness: 0.08,
-                        reflectance: 0.35,
-                        ..default()
-                    })
-                });
-                commands.spawn((part, Mesh3d(mesh), MeshMaterial3d(m.clone()), at, ChildOf(body), bevy::light::NotShadowCaster));
+                let Some(m) = glass.at(car_damage::stages(stage).1, &mut standard, &mut images) else { continue };
+                commands.spawn((part, Mesh3d(mesh), MeshMaterial3d(m), at, ChildOf(body), bevy::light::NotShadowCaster));
             } else {
                 commands.spawn((part, Mesh3d(mesh), MeshMaterial3d(mats.props.clone()), at, ChildOf(body)));
             }

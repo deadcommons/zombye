@@ -124,6 +124,9 @@ fn linear((r, g, b): (f32, f32, f32)) -> Vec3 {
 pub struct Wear {
     /// 0 as made .. 1 a wreck.
     pub amount: f32,
+    /// 0 none .. 1 all over: dark scrapes and dents' shadows from crashes (a driven car's body
+    /// damage, `vehicles_render`); a parked prop has none.
+    pub scuffs: f32,
     seed: u32,
     /// The model's main colour and the paint this one has instead.
     paint: Option<(Vec3, Vec3)>,
@@ -145,7 +148,7 @@ impl Wear {
             }
             _ => None,
         };
-        (amount > 0.0 || paint.is_some()).then(|| Wear { amount, seed: (x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663), paint, dust: linear(look.dust), rust: linear(look.rust) })
+        (amount > 0.0 || paint.is_some()).then(|| Wear { amount, scuffs: 0.0, seed: (x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663), paint, dust: linear(look.dust), rust: linear(look.rust) })
     }
 
     /// The colour of a corner of the model: where it is, `p`, and its normal `n` in the model's
@@ -161,6 +164,7 @@ impl Wear {
         }
         let w = self.amount;
         if w <= 0.0 {
+            let v = self.scuffed(p, v);
             return LinearRgba::new(v.x, v.y, v.z, c.alpha);
         }
         let lum = v.dot(Vec3::new(0.2126, 0.7152, 0.0722));
@@ -177,7 +181,21 @@ impl Wear {
         let from = 1.0 - w * w * 0.45;
         let rust = ((rusty - from) / 0.22).clamp(0.0, 1.0);
         v = v.lerp(self.rust * (0.7 + 0.3 * self.drift(p, 0.5, 31)), rust * rust * (3.0 - 2.0 * rust) * 0.6);
+        let v = self.scuffed(p, v);
         LinearRgba::new(v.x, v.y, v.z, c.alpha)
+    }
+
+    /// `v` with the crash scrapes over it: dark patches, small and few at first, joining up as
+    /// `scuffs` nears 1, with bare primer grey in the middle of the biggest.
+    fn scuffed(&self, p: Vec3, v: Vec3) -> Vec3 {
+        if self.scuffs <= 0.0 {
+            return v;
+        }
+        let n = 0.65 * self.drift(p, 0.42, 47) + 0.35 * self.drift(p, 0.13, 53);
+        let from = 0.82 - 0.5 * self.scuffs.min(1.0);
+        let dark = ((n - from) / 0.07).clamp(0.0, 1.0);
+        let bare = ((n - from - 0.12) / 0.05).clamp(0.0, 1.0);
+        v.lerp(Vec3::splat(0.02), dark * 0.85).lerp(Vec3::new(0.2, 0.2, 0.21), bare * 0.7)
     }
 
     /// Smooth noise over the model, 0..1, its features `size` metres across.

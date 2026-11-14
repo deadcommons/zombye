@@ -1238,7 +1238,15 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   glass is see-through (a blended `StandardMaterial`). `parse_glb` now reads the scene's node tree, parents' transforms
   included. A parked prop of the same model is still merged whole into its chunk, and a model without parts is one mesh
   as before. A car whose drawn place or speed isn't a number is drawn where the snapshot says and gets no lights (#67).
-- **Not yet:** MCP tools, running players over, damage drawn on the car, more vehicle kinds, a key's car shown on
+- **Damage drawn (#68; client only, `car_damage.rs`, from `VehicleView::parts`):** the engine smokes from under the
+  bonnet (`car_damage::smoke`: pale puffs under 50%, thick dark ones under 20%, more while it runs; one wrecked in
+  front of us burns for `BURN_SECS`, 45 s, then only smokes; at most 220 puffs alive, cubes in three shared
+  materials); the windows crack in two stages and are gone at 0 (`glass_stage`, `Glass`: a tiling texture of cracks
+  made in code, laid over the panes by `crack_uvs`); the body is scraped dark in patches that join up as it takes
+  more (`body_stage`, the wear's `scuffs`, baked into the vertex colours with the rust and dust); the car sits up to
+  9 cm lower on flat tyres (`tyre_sink`). A car is made again only when its body's or windows' stage changes
+  (`car_damage::stage`). Nothing is bent: the model keeps its shape.
+- **Not yet:** MCP tools, running players over, dents that change a car's shape, more vehicle kinds, a key's car shown on
   the key, picking locks, an inside view, other cars' horns heard (the snapshot doesn't say), the engine heard from where each car is.
 - Tests: `sim::vehicles::tests`.
 
