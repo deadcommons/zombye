@@ -211,7 +211,7 @@ Each is one function in `theme.rs`; a panel never builds its own.
 
 | Screen | Body | Notes |
 |---|---|---|
-| Inventory | Gear (hands, body slots, bag slots, hotbar, load) / You (a pane for the pockets and for each bag) / Nearby (the open container, the floor) | Search, sort, chips and the view switch over the middle column. |
+| Inventory | Gear (hands, body slots, bag slots, hotbar, load) / You (a pane for the pockets and for each bag) / Nearby (the open container, the floor, every other container in reach: searched ones as panes, the rest with a Search button) | Search, sort, chips and the view switch over the middle column. |
 | Make | Recipes by category / the chosen recipe: what goes in, tools, what comes out, the time, Make | Fire and cooking add their recipes here. |
 | Build | What can be built, by category / the chosen piece: materials, tools, where it goes | Barricades first; walls, furniture and bigger works later, in the same list. |
 | Survivor: Info | Who this is: name, Background, days survived, kills / Strengths and Flaws as two lists / appearance | A Strength is green with a plus, a Flaw amber with a minus, each with one line saying what it does. What character creation chose is shown here. |

@@ -1633,6 +1633,8 @@ impl World {
         }
         // No tick has run since: only the tier counts are known.
         [w.stats.active, w.stats.near, w.stats.virtual_] = w.tier_counts();
+        // The containers each player has within reach (#55), as a tick would leave them.
+        w.fill_nearby();
         Ok(Loaded { world: w, notes })
     }
 }

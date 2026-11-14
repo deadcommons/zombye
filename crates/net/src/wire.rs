@@ -82,8 +82,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// need: `SnapshotDelta::vehicles` is the cars changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks. 38: cars stage 4: `VehicleView::locked` and
 /// `start`, `VehicleOp::Hotwire`, `TakeKey`, `Lock`, `BreakIn`, `Repair`, `JobKind::Hotwire` and `Repair`,
 /// `Skill::Mechanics`, `VehicleData::work`. 39: the
-/// world's difficulty in the rules (`Rules::difficulty`), and `CombatTuning::zombie_damage` in the tunings.)
-pub const PROTOCOL: u32 = 39;
+/// world's difficulty in the rules (`Rules::difficulty`), and `CombatTuning::zombie_damage` in the tunings. 40: the containers within reach in the
+/// private view (`PrivateView::nearby`, #55).)
+pub const PROTOCOL: u32 = 40;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

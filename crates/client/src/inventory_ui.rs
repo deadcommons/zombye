@@ -7,7 +7,10 @@
 //! pockets and for each bag carried, each with its own room (`Inventory::pouches`): a thing is in
 //! one of them (`ItemStack::home`). **Nearby** (right): the open container (search one with E) and
 //! the floor within reach, each a pane; a press on a pane's name makes it the one your things go
-//! to. "Take all" and "Put mine in" at its foot move everything across.
+//! to. "Take all" and "Put mine in" at its foot move everything across. Under them, every other
+//! container within reach, from any side (#55, `PrivateView::nearby`): one searched already is a
+//! pane to take from (a press on its head opens it, to put things in), one not yet a row with a
+//! Search button and its time; "Search all" queues the searches one after another.
 //!
 //! **Nothing scrolls sideways.** Things are tiles that wrap ([`Ctx::tiles`]) or, with the "Rows"
 //! control, compact one-line rows ([`Ctx::rows`]); each column scrolls up and down by itself
@@ -858,7 +861,11 @@ fn stack_at(v: &PrivateView, floor: &[(u32, ItemStack)], place: Place, index: u3
         Place::Slot(slot) => v.inventory.slot(slot),
         // (Only somewhere things go to.)
         Place::Pouch(_) => None,
-        Place::Container(id) => v.open.as_ref().filter(|c| c.id == id).and_then(|c| c.stacks.get(i)).copied(),
+        // The open container, or one searched already within reach (#55).
+        Place::Container(id) => match v.open.as_ref().filter(|c| c.id == id) {
+            Some(c) => c.stacks.get(i).copied(),
+            None => v.nearby.iter().find(|n| n.id == id).and_then(|n| n.stacks.as_ref()?.get(i)).copied(),
+        },
         Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| *s),
     }
 }
@@ -1143,7 +1150,7 @@ fn rebuild(
     let pouches: Vec<(Pouch, String, f32, f32)> = view.as_ref().map_or(Vec::new(), |v| v.inventory.pouches(items, join.carry.pockets_l).into_iter().map(|(p, room, used)| (p, pouch_name(items, &v.inventory, p), room, used)).collect());
     let pouch_names: Vec<(Pouch, String)> = pouches.iter().map(|(p, n, ..)| (*p, n.to_lowercase())).collect();
     let have = view.as_ref().map(|v| stock(v, &floor));
-    let ctx = Ctx { stock: have.as_ref(), items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())), pouches: &pouch_names, recipes: &join.recipes };
+    let ctx = Ctx { stock: have.as_ref(), items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())), pouches: &pouch_names, recipes: &join.recipes, max_jobs: join.carry.max_jobs as usize };
     // The item rows drawn, in order, for Shift-click's ranges and the move-all buttons.
     let mut rows: Vec<Key> = Vec::new();
     let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
@@ -1499,7 +1506,7 @@ fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pri
                 let shut = ctx.ui.shut.contains(&pane);
                 let bag = p.slot().and_then(|slot| inv.slot(slot)).and_then(|b| ctx.items.get(b.item as usize));
                 drop_pane(s, Place::Pouch(*p)).with_children(|s| {
-                    pane_head(s, Head { pane, def: bag.or_else(|| ctx.items.iter().find(|d| d.id == "jeans")), name, sub: pouch_where(*p).into(), right: format!("{used:.1} / {room:.0} L"), share: Some(used / room.max(0.1)), shut, count: lines.len(), target: None });
+                    pane_head(s, Head { pane, def: bag.or_else(|| ctx.items.iter().find(|d| d.id == "jeans")), name, sub: pouch_where(*p).into(), right: format!("{used:.1} / {room:.0} L"), share: Some(used / room.max(0.1)), shut, count: lines.len(), target: None, reopen: None });
                     if !shut {
                         ctx.pane_body(listed, s, lines, right, "Empty");
                     }
@@ -1571,7 +1578,7 @@ fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &
                 let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
                 let shut = ctx.ui.shut.contains(&Pane::Container);
                 drop_pane(s, Place::Container(cv.id)).with_children(|s| {
-                    pane_head(s, Head { pane: Pane::Container, def: None, name: &cv.name, sub: if to_floor { String::new() } else { "your things go here".into() }, right: format!("{used:.1} / {:.0} L", cv.room_l), share: Some(used / cv.room_l.max(0.1)), shut, count: cv.stacks.len(), target: Some(!to_floor) });
+                    pane_head(s, Head { pane: Pane::Container, def: None, name: &cv.name, sub: if to_floor { String::new() } else { "your things go here".into() }, right: format!("{used:.1} / {:.0} L", cv.room_l), share: Some(used / cv.room_l.max(0.1)), shut, count: cv.stacks.len(), target: Some(!to_floor), reopen: None });
                     if !shut {
                         ctx.pane_body(listed, s, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }).collect(), Place::Carried, "Empty");
                     }
@@ -1581,13 +1588,31 @@ fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &
             let shut = ctx.ui.shut.contains(&Pane::Floor);
             let sub = if v.open.is_some() && to_floor { "your things go here" } else { "within reach" };
             drop_pane(s, Place::Ground).with_children(|s| {
-                pane_head(s, Head { pane: Pane::Floor, def: None, name: "Floor", sub: sub.into(), right: format!("{:.1} kg", kg.max(0.0)), share: None, shut, count: floor.len(), target: Some(to_floor && v.open.is_some()) });
+                pane_head(s, Head { pane: Pane::Floor, def: None, name: "Floor", sub: sub.into(), right: format!("{:.1} kg", kg.max(0.0)), share: None, shut, count: floor.len(), target: Some(to_floor && v.open.is_some()), reopen: None });
                 if !shut {
                     ctx.pane_body(listed, s, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }).collect(), Place::Carried, "Nothing within reach");
                 }
             });
-            if v.open.is_none() {
-                dim(s, "E: search the cupboard, drawer or fridge you face".into());
+            // The other containers within reach (#55): one searched already is a pane whose
+            // things can be taken (a press on its head opens it, to put things in); one not yet,
+            // a row with its Search button.
+            for n in &v.nearby {
+                match &n.stacks {
+                    Some(stacks) => {
+                        let used = zombye_sim::inventory::stacks_volume(items, stacks);
+                        let shut = ctx.ui.shut.contains(&Pane::Near(n.id));
+                        drop_pane(s, Place::Container(n.id)).with_children(|s| {
+                            pane_head(s, Head { pane: Pane::Near(n.id), def: None, name: &n.name, sub: "searched".into(), right: format!("{used:.1} / {:.0} L", n.room_l), share: Some(used / n.room_l.max(0.1)), shut, count: stacks.len(), target: None, reopen: Some(n.id) });
+                            if !shut {
+                                ctx.pane_body(listed, s, stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(n.id), index: k as u32, stack: *s }).collect(), Place::Carried, "Empty");
+                            }
+                        });
+                    }
+                    None => unsearched(s, v, n),
+                }
+            }
+            if v.open.is_none() && v.nearby.is_empty() {
+                dim(s, "Nothing to search within reach".into());
             }
         });
         col.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), padding: UiRect::new(px(20), px(20), px(10), px(14)), flex_shrink: 0.0, ..default() }).with_children(|b| {
@@ -1595,6 +1620,34 @@ fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &
             flat::button(b, "Take all", true).observe(move |_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(across));
             flat::button(b, if to_floor { "Drop mine" } else { "Put mine in" }, false).observe(|_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(Column::You));
         });
+        // Every unsearched one within reach, one after another (cancelled like any job).
+        let todo = search_all(v, ctx.me, ctx.max_jobs);
+        if !todo.is_empty() {
+            let secs: f32 = v.nearby.iter().filter(|n| todo.iter().any(|i| matches!(i, Intent::Search { container: Some(c), .. } if *c == n.id))).map(|n| n.search_secs).sum();
+            col.spawn(Node { flex_direction: FlexDirection::Row, padding: UiRect::new(px(20), px(20), px(0), px(14)), flex_shrink: 0.0, ..default() }).with_children(|b| {
+                flat::button(b, &format!("Search all ({} · {secs:.0} s)", todo.len()), false).observe(move |_: On<PointerPress>, mut out: ResMut<Outbox>| out.0.extend(todo.iter().cloned()));
+            });
+        }
+    });
+}
+
+/// A container within reach not searched yet (#55): its name, its room and a Search button with
+/// the time it takes (the real search, with its noise, and its loot rolled only then).
+fn unsearched(s: &mut ChildSpawnerCommands, v: &PrivateView, n: &zombye_net::NearbyView) {
+    let (me, id) = (v.player, n.id);
+    let label = search_label(v, id, n.search_secs);
+    let queued = v.jobs.iter().any(|j| *j == JobKind::Search { container: id });
+    s.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(6), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|c| {
+        c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), ..default() }, Pickable::IGNORE)).with_children(|r| {
+            r.spawn((Text::new(n.name.to_uppercase()), theme::head(flat::HEAD), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            r.spawn((Text::new("not searched"), font(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+            r.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE));
+            let mut chip = flat::chip(r, &label, queued);
+            if !queued {
+                chip.observe(move |_: On<PointerPress>, mut out: ResMut<Outbox>| out.0.push(Intent::Search { player: me, container: Some(id) }));
+            }
+        });
+        flat::line(c);
     });
 }
 
@@ -1609,6 +1662,8 @@ enum Pane {
     Pouch(Pouch),
     Container,
     Floor,
+    /// A container within reach that isn't the open one (#55), by id.
+    Near(u32),
 }
 
 /// What a pane's head says.
@@ -1627,6 +1682,9 @@ struct Head<'a> {
     count: usize,
     /// A pane of the Nearby column: whether your things go to it (a press on its head makes it so).
     target: Option<bool>,
+    /// A container within reach that isn't open (#55): a press on its head opens it (a quick
+    /// reopen, it has been searched), so it becomes the one your things go to.
+    reopen: Option<u32>,
 }
 
 /// A pane's head: a fold mark, its name and how full it is, over a thin bar of that.
@@ -1666,13 +1724,38 @@ fn pane_head(s: &mut ChildSpawnerCommands, h: Head) {
             None => flat::line(c),
         }
     });
-    if h.target.is_some() {
+    if let Some(c) = h.reopen {
+        e.observe(move |_: On<PointerPress>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>, mut out: ResMut<Outbox>| {
+            // Opened, it comes to the front as the target (`PanelUi::saw`).
+            if ui.floor {
+                ui.floor = false;
+            }
+            out.0.push(Intent::Search { player: me.id, container: Some(c) });
+        });
+    } else if h.target.is_some() {
         e.observe(move |_: On<PointerPress>, mut ui: ResMut<PanelUi>| {
             let floor = pane == Pane::Floor;
             if ui.floor != floor {
                 ui.floor = floor;
             }
         });
+    }
+}
+
+/// The searches "Search all" asks for (#55): each unsearched container within reach that isn't
+/// being searched already, nearest first, no more than the queue takes.
+fn search_all(v: &PrivateView, me: u32, max: usize) -> Vec<Intent> {
+    let queued = |c: u32| v.jobs.iter().any(|j| *j == JobKind::Search { container: c });
+    let room = max.saturating_sub(v.jobs.len());
+    v.nearby.iter().filter(|n| n.stacks.is_none() && !queued(n.id)).take(room).map(|n| Intent::Search { player: me, container: Some(n.id) }).collect()
+}
+
+/// "Search (4 s)", "Searching", "Next": what an unsearched container's button says.
+fn search_label(v: &PrivateView, id: u32, secs: f32) -> String {
+    match v.jobs.iter().position(|j| *j == JobKind::Search { container: id }) {
+        Some(0) => "Searching".into(),
+        Some(_) => "Queued".into(),
+        None => format!("Search ({secs:.0} s)"),
     }
 }
 
@@ -1724,6 +1807,8 @@ struct Ctx<'a> {
     recipes: &'a [crafting::RecipeDef],
     /// What we have to craft with ([`stock`]).
     stock: Option<&'a zombye_sim::Inventory>,
+    /// The most item jobs the server queues (`CarryTuning::max_jobs`), for "Search all".
+    max_jobs: usize,
 }
 
 /// What we have to craft with, by the server's rule (`World::craft_stock`): what we carry and
