@@ -15,6 +15,7 @@
 //! zombye-reports mark SIGNATURE|#N [--status new|filed|fixed|ignored|regressed] [--issue DCM-12] [--note TEXT]
 //! zombye-reports sql "SELECT ..."          (read-only)
 //! zombye-reports prune --days N            (reports and files older than that; problems stay)
+//! zombye-reports digest [--hours 24] [--max-chars 1900]   (plain text, for a chat channel; nothing if no reports)
 //! ```
 //!
 //! `DIR` is `--dir`, else `$ZOMBYE_REPORTS_DIR`, else `~/zombye-reports`. `ZOMBYE_REPORT_KEY`, if
@@ -105,7 +106,8 @@ fn main() {
             Some(days) => prune(&dir, days),
             None => Err("prune --days N".into()),
         },
-        _ => Err("zombye-reports serve | problems | list | show | mark | sql | prune (see the source's docs or docs/bug-reports.md)".into()),
+        Some("digest") => digest(&dir, value("--hours").and_then(|v| v.parse().ok()).unwrap_or(24), value("--max-chars").and_then(|v| v.parse().ok()).unwrap_or(1900)),
+        _ => Err("zombye-reports serve | problems | list | show | mark | sql | prune | digest (see the source's docs or docs/bug-reports.md)".into()),
     };
     if let Err(e) = result {
         eprintln!("zombye-reports: {e}");
@@ -463,6 +465,69 @@ fn prune(dir: &Path, days: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// The last `hours` of reports as a short text for a chat channel: how many, from how many installs,
+/// each problem they belong to (regressed and new first) and what players wrote with their F12
+/// reports. Nothing at all when there were none, so a script posts nothing.
+fn digest(dir: &Path, hours: i64, max_chars: usize) -> Result<(), String> {
+    let db = open_read(dir)?;
+    let text = digest_text(&db, report::now_secs() as i64 - hours * 3600, hours, max_chars)?;
+    if !text.is_empty() {
+        println!("{text}");
+    }
+    Ok(())
+}
+
+fn digest_text(db: &Connection, since: i64, hours: i64, max_chars: usize) -> Result<String, String> {
+    let totals = rows(db, "SELECT COUNT(*) AS n, COUNT(DISTINCT install) AS installs FROM reports WHERE received >= ?1", &[&since])?;
+    let n = totals[0]["n"].as_i64().unwrap_or(0);
+    if n == 0 {
+        return Ok(String::new());
+    }
+    let installs = totals[0]["installs"].as_i64().unwrap_or(0);
+    let problems = rows(
+        db,
+        "SELECT p.id, p.kind, p.title, p.status, p.issue, p.count, p.first_seen >= ?1 AS fresh,
+                COUNT(r.id) AS recent, COUNT(DISTINCT r.install) AS installs, GROUP_CONCAT(DISTINCT r.build) AS builds,
+                MAX(r.id) AS latest, MAX(json_extract(r.details, '$.what')) AS what
+         FROM reports r JOIN problems p ON p.signature = r.signature
+         WHERE r.received >= ?1
+         GROUP BY p.id
+         ORDER BY CASE p.status WHEN 'regressed' THEN 0 WHEN 'new' THEN 1 ELSE 2 END, p.kind = 'f12', COUNT(r.id) DESC, p.id",
+        &[&since],
+    )?;
+    let clip = |s: &str, n: usize| if s.chars().count() > n { format!("{}...", s.chars().take(n).collect::<String>()) } else { s.to_string() };
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let head = format!("**Problem reports, last {hours} h:** {n} report{} from {installs} install{}, {} problem{}", if n == 1 { "" } else { "s" }, if installs == 1 { "" } else { "s" }, problems.len(), if problems.len() == 1 { "" } else { "s" });
+    let mut out = head;
+    let mut left = problems.len();
+    for p in &problems {
+        let get = |k: &str| p[k].as_str().unwrap_or("").to_string();
+        let num = |k: &str| p[k].as_i64().unwrap_or(0);
+        let status = get("status");
+        let tag = match (status.as_str(), num("fresh") == 1) {
+            ("regressed", _) => "REGRESSED ".to_string(),
+            ("new", true) => "NEW ".to_string(),
+            ("new", false) => String::new(),
+            (s, _) => format!("{s} "),
+        };
+        let issue = p["issue"].as_str().map_or(String::new(), |i| format!(" ({i})"));
+        let total = if num("count") > num("recent") { format!(", {} in all", num("count")) } else { String::new() };
+        let mut line = format!("\n- {tag}#{} {}: {}{issue}: {}x from {} install{}{total}; latest report {} ({})", num("id"), get("kind"), clip(&one_line(&get("title")), 90), num("recent"), num("installs"), if num("installs") == 1 { "" } else { "s" }, num("latest"), clip(&get("builds"), 60));
+        let what = one_line(&get("what"));
+        if !what.is_empty() {
+            line.push_str(&format!("\n  > {}", clip(&what, 240)));
+        }
+        let more = format!("\n...and {} more: `zombye-reports problems --since 1`", left);
+        if out.chars().count() + line.chars().count() + more.chars().count() > max_chars {
+            out.push_str(&more);
+            return Ok(out);
+        }
+        out.push_str(&line);
+        left -= 1;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +556,26 @@ mod tests {
         store(&db, &dir, &Report::new(report::kind::PLAYER, "client", "Report from a player", "f12"), 400).unwrap();
         store(&db, &dir, &Report::new(report::kind::PLAYER, "client", "Report from a player", "f12"), 500).unwrap();
         assert_eq!(rows(&db, "SELECT id FROM problems WHERE kind = 'f12'", &[]).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_digest_groups_a_day_and_quotes_players() {
+        let dir = temp("digest");
+        let db = open(&dir).unwrap();
+        assert_eq!(digest_text(&db, 0, 24, 1900).unwrap(), "");
+        let panic = |i: &str| Report::new(report::kind::PANIC, "client", "index out of bounds", report::signature("panic", "a.rs:1:1", "boom")).install(i);
+        store(&db, &dir, &panic("i1"), 100).unwrap();
+        store(&db, &dir, &panic("i1"), 1000).unwrap();
+        store(&db, &dir, &panic("i2"), 1100).unwrap();
+        store(&db, &dir, &Report::new(report::kind::PLAYER, "client", "Report from a player (F12)", "f12").install("i3").detail("what", "fell through\nthe floor"), 1200).unwrap();
+        let text = digest_text(&db, 500, 24, 1900).unwrap();
+        assert!(text.starts_with("**Problem reports, last 24 h:** 3 reports from 3 installs, 2 problems"), "{text}");
+        assert!(text.contains("panic: index out of bounds: 2x from 2 installs, 3 in all"), "{text}");
+        assert!(text.contains("> fell through the floor"), "{text}");
+        // Too long: cut, saying how many are left.
+        let short = digest_text(&db, 500, 24, 150).unwrap();
+        assert!(short.chars().count() <= 150 && short.contains("more:"), "{short}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

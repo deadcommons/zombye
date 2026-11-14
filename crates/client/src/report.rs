@@ -9,7 +9,10 @@
 //!
 //! **F12** writes a report folder, `reports/<time>/` in the player's folder: a screenshot, the log
 //! so far, a save of the world (single-player) and `about.txt` (the build, the system, where the
-//! survivor stands), opens it in the file manager and says on the yellow line where it is.
+//! survivor stands). Once the screenshot is taken a small box asks "What happened?" ([`ReportBox`]):
+//! a line of the player's own (optional), which goes into `about.txt` and the report's details
+//! (`what`). Enter sends it, Esc sends without a note; while the box is up every other key is held
+//! back. Then the folder is sent (below), or, when nothing is sent, opened in the file manager.
 //!
 //! **Sent to us** (Linear DCM-92, `zombye_net::report`): when the game has a report address
 //! (`report::endpoint`, compiled into packaged builds) and "Send problem reports" is on (Settings,
@@ -23,8 +26,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bevy::input::InputSystems;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
 use std::sync::{Arc, Mutex};
 
@@ -209,7 +214,12 @@ pub struct ReportPlugin;
 
 impl Plugin for ReportPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Uploads>().add_systems(Update, (crashed_last_time, report_key, send_pending, uploaded)).add_systems(Last, (watch_frames, watch_prediction));
+        app.init_resource::<Uploads>()
+            .init_resource::<ReportBox>()
+            .add_systems(Startup, box_for_picture)
+            .add_systems(PreUpdate, box_keys.after(InputSystems).before(crate::pause_menu::PauseKeys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry))
+            .add_systems(Update, (crashed_last_time, report_key, send_pending, uploaded, draw_box))
+            .add_systems(Last, (watch_frames, watch_prediction));
     }
 }
 
@@ -402,17 +412,17 @@ fn report_key(
     me: Res<LocalPlayer>,
     options: Res<crate::Options>,
     store: Option<Res<SettingsStore>>,
-    uploads: Res<Uploads>,
+    mut report_box: ResMut<ReportBox>,
     mut notice: ResMut<Notice>,
 ) {
-    if !keys.just_pressed(KeyCode::F12) || options.offscreen() {
+    if !keys.just_pressed(KeyCode::F12) || options.offscreen() || report_box.open {
         return;
     }
     let dir = reports_dir().join(stamp(secs_now()));
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return notice.say(time.elapsed_secs(), format!("Couldn't make a report: {}: {e}", dir.display()));
     }
-    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(dir.join("screenshot.png")));
+    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(dir.join("screenshot.png"))).observe(|_: On<ScreenshotCaptured>, mut b: ResMut<ReportBox>| b.shot = true);
     if let Some(log) = log_file() {
         let _ = std::fs::copy(&log, dir.join("zombye.log"));
     }
@@ -433,19 +443,199 @@ fn report_key(
         link.net.as_ref().map_or("single-player".to_string(), |n| n.addr.clone()),
     );
     let _ = std::fs::write(dir.join("about.txt"), about);
-    if store.is_some_and(|s| allowed(&s.settings)) {
-        let r = Report::new(kind::PLAYER, "client", "Report from a player (F12)", "f12");
-        upload_folder(dir.clone(), facts(r, &link, &me, &options), &uploads);
-        notice.say(time.elapsed_secs(), format!("Sending the report to us (a copy is in {})...", dir.display()));
+    let report = store.is_some_and(|s| allowed(&s.settings)).then(|| facts(Report::new(kind::PLAYER, "client", "Report from a player (F12)", "f12"), &link, &me, &options));
+    *report_box = ReportBox { open: true, shot: false, opened_at: time.elapsed_secs(), text: String::new(), pending: Some(Pending { dir, report }) };
+}
+
+/// The most a player's note on an F12 report holds.
+pub const MAX_NOTE: usize = 400;
+/// The box shows this long after F12 at the latest, even if the screenshot never says it's done.
+const SHOT_WAIT_SECS: f32 = 1.5;
+
+/// The F12 box: "What happened?", with the report made and waiting for the player's line.
+#[derive(Resource, Default)]
+pub struct ReportBox {
+    /// Up and taking the keys.
+    pub open: bool,
+    /// The screenshot has been taken, so the box can be drawn without being in it.
+    shot: bool,
+    opened_at: f32,
+    pub text: String,
+    pending: Option<Pending>,
+}
+
+impl ReportBox {
+    /// Up and taking typed letters (the on-screen keyboard asks).
+    pub fn typing(&self) -> bool {
+        self.open
+    }
+}
+
+struct Pending {
+    dir: PathBuf,
+    /// The report to send; none when reports aren't sent (the folder is opened instead).
+    report: Option<Report>,
+}
+
+/// `about.txt` with the player's note in place of the line asking for it.
+pub fn with_note(about: &str, note: &str) -> String {
+    let note = note.trim();
+    let shown = if note.is_empty() { "(nothing written)" } else { note };
+    match about.rfind("What happened (write here):") {
+        Some(at) => format!("{}What happened:\n{shown}\n", &about[..at]),
+        None => format!("{about}\nWhat happened:\n{shown}\n"),
+    }
+}
+
+/// The box's typing: letters into the note, Enter sends, Esc sends without a note. Every other key
+/// and button is held back while it is up.
+#[allow(clippy::too_many_arguments)]
+fn box_keys(
+    mut typed: MessageReader<KeyboardInput>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut report_box: ResMut<ReportBox>,
+    options: Res<crate::Options>,
+    uploads: Res<Uploads>,
+    time: Res<Time>,
+    mut notice: ResMut<Notice>,
+) {
+    if !report_box.open || options.offscreen() {
+        typed.clear();
         return;
     }
-    reveal(&dir);
-    notice.say(time.elapsed_secs(), format!("Report saved to {}: add a line to about.txt and send us the folder", dir.display()));
+    let mut send = None;
+    for k in typed.read().filter(|k| k.state.is_pressed()) {
+        match &k.logical_key {
+            Key::Character(c) => {
+                let room = MAX_NOTE.saturating_sub(report_box.text.chars().count());
+                report_box.text.extend(c.chars().filter(|c| !c.is_control()).take(room));
+            }
+            Key::Space if report_box.text.chars().count() < MAX_NOTE => report_box.text.push(' '),
+            Key::Backspace => {
+                report_box.text.pop();
+            }
+            Key::Enter => send = Some(report_box.text.trim().to_string()),
+            Key::Escape => send = Some(String::new()),
+            _ => {}
+        }
+    }
+    keys.reset_all();
+    mouse.reset_all();
+    let Some(note) = send else { return };
+    let pending = report_box.pending.take();
+    *report_box = ReportBox::default();
+    let Some(Pending { dir, report }) = pending else { return };
+    let about = dir.join("about.txt");
+    let _ = std::fs::write(&about, with_note(&std::fs::read_to_string(&about).unwrap_or_default(), &note));
+    match report {
+        Some(mut r) => {
+            if !note.is_empty() {
+                r = r.detail("what", &note);
+            }
+            upload_folder(dir.clone(), r, &uploads);
+            notice.say(time.elapsed_secs(), format!("Sending the report to us (a copy is in {})...", dir.display()));
+        }
+        None => {
+            reveal(&dir);
+            notice.say(time.elapsed_secs(), format!("Report saved to {}: send us the folder", dir.display()));
+        }
+    }
+}
+
+/// `--report-box TEXT`: the box up with that note, for pictures.
+fn box_for_picture(options: Res<crate::Options>, mut report_box: ResMut<ReportBox>) {
+    if let Some(text) = &options.report_box {
+        *report_box = ReportBox { open: true, shot: true, text: text.clone(), ..default() };
+    }
+}
+
+#[derive(Component)]
+struct BoxRoot;
+#[derive(Component)]
+struct BoxText;
+#[derive(Component)]
+struct BoxCount;
+
+/// Draw the box while it is up (once the screenshot is taken), the note as typed.
+fn draw_box(
+    mut commands: Commands,
+    report_box: Res<ReportBox>,
+    time: Res<Time>,
+    root: Query<Entity, With<BoxRoot>>,
+    mut text: Query<&mut Text, (With<BoxText>, Without<BoxCount>)>,
+    mut count: Query<&mut Text, (With<BoxCount>, Without<BoxText>)>,
+) {
+    use crate::theme::flat::*;
+    use crate::theme::{font, head};
+    let show = report_box.open && (report_box.shot || time.elapsed_secs() - report_box.opened_at > SHOT_WAIT_SECS);
+    let shown = root.iter().next();
+    if !show {
+        if let Some(e) = shown {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    let typed = format!("{}|", report_box.text);
+    let left = format!("{} / {MAX_NOTE}", report_box.text.chars().count());
+    if shown.is_some() {
+        for mut t in &mut text {
+            if t.0 != typed {
+                t.0 = typed.clone();
+            }
+        }
+        for mut t in &mut count {
+            if t.0 != left {
+                t.0 = left.clone();
+            }
+        }
+        return;
+    }
+    commands
+        .spawn((
+            BoxRoot,
+            Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
+            GlobalZIndex(40),
+        ))
+        .with_children(|r| {
+            r.spawn((
+                Node { width: px(560), flex_direction: FlexDirection::Column, row_gap: px(12), padding: UiRect::all(px(22)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() },
+                BackgroundColor(SOLID),
+                BorderColor::all(LINE),
+            ))
+            .with_children(|p| {
+                p.spawn((Text::new("WHAT HAPPENED?"), head(TITLE), TextColor(BONE)));
+                p.spawn((Text::new("A report with a screenshot and the log is ready. A line about what went wrong helps us find it. You can leave it empty."), font(BODY), TextColor(DIM)));
+                p.spawn((
+                    Node { min_height: px(84), padding: UiRect::all(px(10)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() },
+                    BackgroundColor(CELL),
+                    BorderColor::all(GREEN),
+                ))
+                .with_children(|f| {
+                    f.spawn((BoxText, Text::new(typed.clone()), font(BODY), TextColor(BONE), Node { width: percent(100), ..default() }));
+                });
+                p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(16), align_items: AlignItems::Center, ..default() }).with_children(|h| {
+                    hint(h, &["Enter"], "send");
+                    hint(h, &["Esc"], "send without a note");
+                    h.spawn(Node { flex_grow: 1.0, ..default() });
+                    h.spawn((BoxCount, Text::new(left.clone()), font(SMALL), TextColor(FAINT)));
+                });
+            });
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_note_takes_the_place_of_the_ask() {
+        let about = "Zombye x\nserver: single-player\n\nWhat happened (write here):\n";
+        assert_eq!(with_note(about, "  fell through the floor "), "Zombye x\nserver: single-player\n\nWhat happened:\nfell through the floor\n");
+        assert!(with_note(about, "").ends_with("What happened:\n(nothing written)\n"));
+        assert!(with_note("old", "x").ends_with("What happened:\nx\n"));
+    }
 
     #[test]
     fn stamps_are_dates() {

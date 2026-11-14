@@ -526,12 +526,14 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
 - **Log, crash and F12** (`report.rs`): a packaged game runs itself again as a child with its output in
   `logs/zombye.log` (the last kept as `zombye.prev.log`); a crash (exit code other than 0 or 1) is copied to
   `logs/crash-<time>.log` and the next start says so on the yellow line. **F12** writes `reports/<time>/` (screenshot,
-  the log so far, `world.zsave` in single-player, `about.txt`) and opens it in the file manager.
+  the log so far, `world.zsave` in single-player, `about.txt`), asks "What happened?" in a box (the note goes into
+  `about.txt` and the report; `--report-box TEXT` for a picture), then sends it or opens it in the file manager.
 - **Problem reports** (`net::report`, Linear DCM-92, **[docs/bug-reports.md](docs/bug-reports.md)**): with a report
   address (`ZOMBYE_REPORT_URL`, compiled in by `package.sh`; never in this repo) and "Send problem reports" on (Settings,
   Game), the game sends its panics and crashes (the child's panic hook leaves `logs/panic.zrpt` for the parent), the F12
   folder, frames over 1 s and repeated prediction corrections to the report service (`zombye-reports`), and `--host`
-  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into GitHub issues with the
+  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). Reports never become issues by themselves:
+  `tools/reports/digest.sh` posts a daily digest of them, grouped by problem, to a Discord webhook. An agent triages them into GitHub issues with the
   [triage-reports skill](.claude/skills/triage-reports/SKILL.md). **A new kind of problem worth catching** goes through
   `zombye_net::report::Report` and `queue` / `flush`, with a signature that groups it.
 - **Packaging:** `tools/release/package.sh linux|windows|mac` (Linux and Windows on the build VM, Windows cross-compiled

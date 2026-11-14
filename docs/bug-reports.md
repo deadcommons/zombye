@@ -9,7 +9,7 @@ players sending logs. An agent reads the reports there and turns them into issue
 |---|---|---|---|
 | `panic` | game, server | a Rust panic: the message, where, the thread, a backtrace, the log's tail | the file and the message, numbers taken out |
 | `crash` | game | the game ended badly without a panic (a signal, an exit code but 0 or 1) | how it ended |
-| `f12` | game | the player pressed F12: screenshot, log, `about.txt`, the save (single-player, up to 12 MB) | each one is its own problem |
+| `f12` | game | the player pressed F12: screenshot, log, `about.txt`, the save (single-player, up to 12 MB), and the player's note | each one is its own problem |
 | `hitch` | game | a frame over 1 s, the window focused, after the first 30 s; at most one every 15 minutes | the system |
 | `desync` | game | our survivor's prediction corrected by over a metre 3 times in a minute; at most one every 15 minutes | single-player or multiplayer |
 | `slow_tick` | server | a tick over 150 ms (three ticks' worth); at most one every 10 minutes | one problem |
@@ -34,6 +34,10 @@ unless `ZOMBYE_REPORT_URL` is set.
 - `zombye_net::report` (`crates/net/src/report.rs`) has the report format, `queue` (to a `pending/`
   folder) and `flush` (one plain HTTP POST a report). A report made as the game falls over, or with the
   network down, goes the next time anything flushes. A report waiting more than 14 days is dropped.
+- **F12 asks what happened:** once the screenshot is taken a box asks "What happened?" (up to 400
+  characters; Enter sends, Esc sends without a note, every other key is held back meanwhile). The note
+  goes into `about.txt` and the report's details as `what`. `--report-box TEXT` shows the box, for
+  pictures. With reports off the folder is opened instead, the note already in `about.txt`.
 - **The game** (`crates/client/src/report.rs`): the packaged game runs as a supervised child. Its panic
   hook leaves `logs/panic.zrpt`, and the parent sends that with the log as soon as the child has gone
   down. F12 uploads its folder once the screenshot is written, and the yellow line gives the report's
@@ -71,7 +75,24 @@ zombye-reports show 345                    # one report: everything, and files_d
 zombye-reports mark '#12' --status filed --issue zombye#120 --note "first seen in playtest 11-13"
 zombye-reports sql "SELECT build, COUNT(*) FROM reports WHERE kind = 'hitch' GROUP BY build"   # read-only
 zombye-reports prune --days 90             # drop old reports and their files; problems stay
+zombye-reports digest --hours 24           # plain text for a chat channel (not JSON); prints nothing if no reports
 ```
+
+### The daily digest
+
+Reports never become issues by themselves: one problem can bring hundreds. Instead,
+`tools/reports/digest.sh` posts `digest` to a Discord channel once a day: how many reports from how
+many installs, then a line a problem (regressed and new first, how often in the day and in all, the
+builds, the latest report's number) with each player's F12 note quoted under it, cut to fit one message.
+Run it from cron on the machine with the store:
+
+```bash
+0 8 * * * /path/to/zombye/tools/reports/digest.sh >> ~/zombye-reports/digest.log 2>&1
+```
+
+The webhook address is read from `ZOMBYE_REPORT_WEBHOOK` or `~/.config/zombye/report-webhook`, never
+from the repo. Use a private channel: the notes are players' own words. A problem worth fixing is then
+filed by hand or with the triage skill, and `mark`ed with its issue, so it shows as filed in the next digest.
 
 `problems` lists regressed and new problems first, then the most reported. Each one has its count, how
 many installs it reached, the builds and systems, and its latest report. A report for a problem marked
