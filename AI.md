@@ -21,6 +21,12 @@ Assisted-by: Claude (Anthropic)
 Use it for code, text, art or sound that a tool wrote or generated. Spell-checking and autocomplete
 don't count. Don't credit a tool with `Co-authored-by:`, which is for people.
 
+## Show what it does
+
+An agent that changes something a player sees or hears renders it and attaches the pictures or a clip to
+the pull request, as [CONTRIBUTING.md](CONTRIBUTING.md) asks of everyone. The person it works for looks
+at them before the pull request goes out: a picture is how you check a change you didn't make by hand.
+
 ## Worth reviewing
 
 Open an issue first for anything bigger than a fix, as for any change. A pull request should cost us

@@ -76,6 +76,20 @@ placeholders.
    did a real part of it ([AI.md](AI.md)).
 5. Describe what you changed and how you tested it. For gameplay changes, say what a player will
    notice.
+6. **Show it working.** A change a player can see or hear (gameplay, UI, visuals, animation, camera,
+   lighting, sound) comes with proof in the pull request: screenshots, a before and after pair, or a
+   short video or GIF of it in the game. A reviewer should be able to judge it without building your
+   branch. Changes to code alone, docs, tests or tooling don't need any.
+   - Offscreen renders are the easiest way: `zombye --render-to shot.png --load SAVE ...` draws one
+     picture with no window (see AGENTS.md, Offscreen), and the same command before and after your
+     change makes a fair pair. For movement or timing, record a short clip (`--autoplay`, `--walk`,
+     `--turn` and the other recording flags play it by themselves).
+   - Drag the pictures into the pull request's description or a comment. Don't commit them: review
+     pictures never go in the tree (`saves/` is git-ignored for them).
+   - Keep files small: a PNG or JPEG about 1280 px wide, a clip under 30 seconds.
+   - Pictures from this repo's own art are what we expect. Maintainers with the official build may
+     add pictures of it with the bought art; that's fine to show. The bought asset files themselves
+     never come into this repo.
 
 ## How decisions are made
 
