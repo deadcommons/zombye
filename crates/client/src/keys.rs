@@ -7,6 +7,9 @@
 //! global (like `help_text`), set once at start ([`init`]) and again when the player rebinds
 //! ([`set_overrides`]).
 //!
+//! The controller's buttons answer here too (`pad.rs`): an action a pad button started, holds or
+//! let go of is just pressed, pressed or just released whatever the keys say.
+//!
 //! **Adding an action:** a variant, its id and name in [`Action::ALL`] and [`Action::id`] /
 //! [`Action::name`], and its keys in `keys.ron`.
 
@@ -438,16 +441,17 @@ pub fn current() -> Bindings {
     with(Clone::clone)
 }
 
+/// Was the action started this frame, by its keys or by the controller's button (`pad.rs`)?
 pub fn just_pressed(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.just_pressed(input, a))
+    with(|b| b.just_pressed(input, a)) || crate::pad::just(a)
 }
 
 pub fn pressed(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.pressed(input, a))
+    with(|b| b.pressed(input, a)) || crate::pad::held(a)
 }
 
 pub fn just_released(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.just_released(input, a))
+    with(|b| b.just_released(input, a)) || crate::pad::released(a)
 }
 
 pub fn label(a: Action) -> String {

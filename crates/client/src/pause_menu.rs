@@ -62,7 +62,8 @@ pub fn entries(on_server: bool) -> Vec<Act> {
 pub struct PauseMenu {
     pub open: bool,
     acts: Vec<Act>,
-    shown: Option<bool>,
+    /// Up or not, and the controller in use (its footer names the button), as last drawn.
+    shown: Option<(bool, bool)>,
 }
 
 pub struct PauseMenuPlugin;
@@ -73,7 +74,7 @@ impl Plugin for PauseMenuPlugin {
         app.insert_resource(PauseMenu { open: options.pause || options.settings.is_some(), ..default() })
             .add_systems(Startup, spawn)
             // Before every other key handler: while the menu is up the keys are its own.
-            .add_systems(PreUpdate, keys.after(InputSystems).after(crate::settings_ui::capture).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live))
+            .add_systems(PreUpdate, keys.after(InputSystems).after(crate::settings_ui::capture).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live).run_if(crate::main_menu::layer_down))
             .add_systems(Update, (act, stop_time, draw).chain());
     }
 }
@@ -140,7 +141,8 @@ fn keys(
     }
 }
 
-fn act(mut menu: ResMut<PauseMenu>, mut settings: ResMut<SettingsUi>, mut asked: ResMut<crate::saving::Asked>, options: Res<Options>, mut exit: MessageWriter<AppExit>) {
+fn act(mut menu: ResMut<PauseMenu>, mut settings: ResMut<SettingsUi>, mut asked: ResMut<crate::saving::Asked>, options: Res<Options>, link: Res<ServerLink>, layer: Option<ResMut<crate::main_menu::MenuLayer>>, mut exit: MessageWriter<AppExit>) {
+    let mut layer = layer;
     for a in std::mem::take(&mut menu.acts) {
         match a {
             Act::Resume => menu.open = false,
@@ -154,6 +156,13 @@ fn act(mut menu: ResMut<PauseMenu>, mut settings: ResMut<SettingsUi>, mut asked:
                 menu.open = false;
             }
             Act::Settings => settings.open = true,
+            // In your own world the menu comes up over it, saved (#36); a server is left.
+            Act::MainMenu if link.net.is_none() && layer.is_some() => {
+                if let Some(l) = layer.as_deref_mut() {
+                    l.raise();
+                }
+                menu.open = false;
+            }
             Act::MainMenu => {
                 crate::main_menu::ask_relaunch(crate::main_menu::to_menu_args(&std::env::args().skip(1).collect::<Vec<_>>()), &options);
                 exit.write(AppExit::Success);
@@ -171,13 +180,13 @@ fn act(mut menu: ResMut<PauseMenu>, mut settings: ResMut<SettingsUi>, mut asked:
 
 /// Your own world stands still while the menu is up; a server's goes on. (Not in a picture, whose
 /// visual time must run for poses to settle.)
-fn stop_time(menu: Res<PauseMenu>, loading: Option<Res<crate::loading::Loading>>, link: Res<ServerLink>, options: Res<Options>, mut time: ResMut<Time<Virtual>>) {
+fn stop_time(menu: Res<PauseMenu>, layer: Option<Res<crate::main_menu::MenuLayer>>, loading: Option<Res<crate::loading::Loading>>, link: Res<ServerLink>, options: Res<Options>, mut time: ResMut<Time<Virtual>>) {
     // (The offscreen renderer stops and starts visual time itself.)
     if options.offscreen() {
         return;
     }
     // (And behind the loading screen: nothing happens to a survivor you can't see yet.)
-    let stop = (menu.open || loading.is_some_and(|l| l.up)) && link.net.is_none();
+    let stop = (menu.open || loading.is_some_and(|l| l.up) || !crate::main_menu::layer_down(layer)) && link.net.is_none();
     if time.is_paused() != stop {
         if stop { time.pause() } else { time.unpause() }
     }
@@ -186,10 +195,11 @@ fn stop_time(menu: Res<PauseMenu>, loading: Option<Res<crate::loading::Loading>>
 fn draw(mut commands: Commands, mut menu: ResMut<PauseMenu>, settings: Res<SettingsUi>, link: Res<ServerLink>, mut root: Query<&mut Node, With<Root>>, panel: Query<Entity, With<Panel>>) {
     // (The settings screen stands in its place, not over it.)
     let up = menu.open && !settings.open;
-    if menu.shown == Some(up) {
+    let want = (up, crate::pad::showing());
+    if menu.shown == Some(want) {
         return;
     }
-    menu.shown = Some(up);
+    menu.shown = Some(want);
     let (Ok(mut node), Ok(panel)) = (root.single_mut(), panel.single()) else { return };
     node.display = if up { Display::Flex } else { Display::None };
     commands.entity(panel).despawn_related::<Children>();

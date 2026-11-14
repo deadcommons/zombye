@@ -330,7 +330,9 @@ fn act(mut join: ResMut<Join>, mut exit: MessageWriter<AppExit>) {
             Act::Back => {
                 let o = &join.options;
                 let autosave = save_file::path_for(&o.saves, crate::saving::AUTOSAVE).ok().filter(|p| p.is_file() && o.from_browser.as_deref() == Some("single"));
-                let args = back_args(&std::env::args().skip(1).collect::<Vec<_>>(), autosave.as_ref().and_then(|p| p.to_str()));
+                let run: Vec<String> = std::env::args().skip(1).collect();
+                // A join asked for in the main menu (its server list, or a game hosted there) goes back there.
+                let args = if o.from_browser.as_deref() == Some("menu") { crate::main_menu::multiplayer_screen_args(&run) } else { back_args(&run, autosave.as_ref().and_then(|p| p.to_str())) };
                 if let Ok(mut n) = NEXT.lock() {
                     *n = Some(Relaunch { args, password: o.password.clone() });
                 }

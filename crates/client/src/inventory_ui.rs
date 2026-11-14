@@ -611,7 +611,10 @@ impl Plugin for InventoryUiPlugin {
             ..default()
         };
         let picked = Picked { keys: options.as_ref().map_or(Vec::new(), |o| o.pick.iter().map(|&k| (Place::Carried, k, u16::MAX)).collect()), anchor: None };
+        // The Gear, You and Nearby windows (`inv_windows.rs`): where they were left, or `--panel-at`'s.
+        let windows = crate::inv_windows::Windows::new(settings.inventory_windows, options.as_ref().and_then(|o| o.panel_at.as_deref()).unwrap_or_default(), &tabs);
         app.insert_resource(InventoryPanel { open })
+            .insert_resource(windows)
             .insert_resource(find)
             .insert_resource(picked)
             .insert_resource(ui)
@@ -635,6 +638,7 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
             .add_systems(Update, ((toggle, make_key, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain())
+            .add_systems(Update, (crate::inv_windows::track.before(rebuild), crate::inv_windows::place.after(rebuild)))
             .add_systems(Update, count_down.after(rebuild));
     }
 }
@@ -823,6 +827,17 @@ impl RowAction {
     fn keys(&self) -> Vec<Key> {
         self.left.iter().map(|&(from, index, _)| (from, index, self.stack.item)).chain(self.more.iter().map(Line::key)).collect()
     }
+}
+
+/// The Make list's rule for a recipe, for the make wheel (`wheel.rs`): can it be made here and
+/// now, from what we carry, our floor and the open container, with the heat or water it needs.
+pub fn make_check<'a>(link: &'a ServerLink, map: &crate::server_link::ClientMap, join: &'a JoinInfo, me: &LocalPlayer) -> impl Fn(&zombye_sim::RecipeDef) -> bool + 'a {
+    let (view, floor) = panel_view(link, me.id);
+    let near = view.as_ref().map(|v| stock(v, &floor));
+    let heat = zombye_sim::fire::heat_near(&map.0, &join.fire, link.curr.fires.iter().map(|f| (Vec2::from(f.pos), f.lit)), me.curr.pos, me.curr.level, |_| link.curr.grid_on);
+    let water = zombye_sim::power::water_near(&map.0, &join.water, link.curr.water_on, me.curr.pos, me.curr.level);
+    let cistern = crate::world_actions::cistern_here(&map.0, &join.water, &link.curr, me.curr.pos, me.curr.level).is_some();
+    move |r: &zombye_sim::RecipeDef| near.as_ref().is_some_and(|n| crafting::check(r, n, &join.items).is_ok() && (!r.heat || heat) && (!r.water || water) && (!r.cistern || cistern))
 }
 
 /// What the panel shows and the requests are checked against: our private view and our floor
@@ -1054,16 +1069,16 @@ fn rebuild(
     me: Res<LocalPlayer>,
     last: Res<LastNote>,
     flight: Res<InFlight>,
-    (find, picked, ui): (Res<Find>, Res<Picked>, Res<PanelUi>),
+    (find, picked, ui, wins): (Res<Find>, Res<Picked>, Res<PanelUi>, Res<crate::inv_windows::Windows>),
     (scrolls, bar, mut card): (Res<Scrolls>, Option<Res<crate::hotbar::Hotbar>>, ResMut<HoverCard>),
     (health, skills, build): (Option<Res<crate::health_ui::HealthPanel>>, Option<Res<crate::skills_ui::SkillsPanel>>, Option<Res<crate::build_ui::BuildMenu>>),
     mut listed: ResMut<Listed>,
     mut make_ui: ResMut<MakeUi>,
     options: Option<Res<crate::Options>>,
     mut shown: ResMut<Shown>,
-    mut root: Query<(Entity, &mut Visibility), With<PanelRoot>>,
+    mut root: Query<(Entity, &mut Visibility, &mut BackgroundColor), With<PanelRoot>>,
 ) {
-    let Ok((root, mut vis)) = root.single_mut() else { return };
+    let Ok((root, mut vis, mut veil)) = root.single_mut() else { return };
     let want = if panel.open { Visibility::Inherited } else { Visibility::Hidden };
     if *vis != want {
         *vis = want;
@@ -1103,7 +1118,14 @@ fn rebuild(
         (.., true) => Tab::Make,
         _ => Tab::Inventory,
     };
-    let signature = format!("{heat}|{water:?}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
+    // The inventory's three parts as windows over the game (`inv_windows.rs`), where there is
+    // room for them; the other screens, and a small window, keep the whole veil.
+    let windows = tab == Tab::Inventory && wins.on();
+    let want = if windows { crate::inv_windows::VEIL } else { flat::VEIL };
+    if veil.0 != want {
+        veil.0 = want;
+    }
+    let signature = format!("{windows}|{}|{heat}|{water:?}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", wins.fixed, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, (crate::help_text::level(), crate::pad::showing()));
     if shown.0 == signature {
         return;
     }
@@ -1126,9 +1148,12 @@ fn rebuild(
     let y = scrolls.0;
     let note = (note_fresh && !last.text.is_empty()).then(|| (last.text.clone(), last.ok));
     commands.entity(root).with_children(|c| {
-        top(c, &format!("{tab:?}"), &clock);
-        c.spawn(Node { flex_direction: FlexDirection::Row, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), ..default() }).with_children(|mid| {
-            rail(mid, tab);
+        // (With windows the veil is light: the bars keep the full one as their own backing.)
+        let bars = if windows { flat::VEIL } else { Color::NONE };
+        top(c, &format!("{tab:?}"), &clock, bars);
+        // (Not picked itself: over the game, a click between the windows is a click on the world.)
+        c.spawn((Node { flex_direction: FlexDirection::Row, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), ..default() }, Pickable::IGNORE)).with_children(|mid| {
+            rail(mid, tab, bars);
             let Some(v) = &view else { return };
             // (Health, Skills and Build draw their own middle over the frame.)
             if matches!(tab, Tab::Health | Tab::Skills | Tab::Build) {
@@ -1141,11 +1166,21 @@ fn rebuild(
                 make_column(mid, &join, &near, busy.0, &flight, &make_ui, y[3], heat, water);
                 return;
             }
-            gear(mid, &ctx, &mut rows, v, bar.as_deref(), y[0]);
-            you(mid, &ctx, &mut rows, v, &pouches, right, y[1], (picked.keys.len(), kg));
-            nearby(mid, &ctx, &mut rows, v, &floor, right, y[2]);
+            if windows {
+                // The room the windows stand in: what the rail leaves, clipped at its edges.
+                mid.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|area| {
+                    use crate::inv_windows::frame;
+                    frame(area, &wins, 0, "Gear", None).with_children(|w| gear(w, &ctx, &mut rows, v, bar.as_deref(), y[0], true));
+                    frame(area, &wins, 1, "You", Some(carried_note(items, &v.inventory))).with_children(|w| you(w, &ctx, &mut rows, v, &pouches, right, y[1], (picked.keys.len(), kg), true));
+                    frame(area, &wins, 2, "Nearby", None).with_children(|w| nearby(w, &ctx, &mut rows, v, &floor, right, y[2], true));
+                });
+                return;
+            }
+            gear(mid, &ctx, &mut rows, v, bar.as_deref(), y[0], false);
+            you(mid, &ctx, &mut rows, v, &pouches, right, y[1], (picked.keys.len(), kg), false);
+            nearby(mid, &ctx, &mut rows, v, &floor, right, y[2], false);
         });
-        footer(c, note, tab);
+        footer(c, note, tab, bars, windows && !wins.fixed);
     });
     listed.0 = rows;
 }
@@ -1187,6 +1222,29 @@ pub(crate) fn scroller<'a>(c: &'a mut ChildSpawnerCommands, k: usize, y: f32, pa
     c.spawn((Scroller(k), ScrollPosition(Vec2::new(0.0, y)), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), row_gap: px(gap), padding, overflow: Overflow::scroll_y(), ..default() }))
 }
 
+/// A [`scroller`] in a window that is only as tall as what is in it (`inv_windows.rs`): it takes
+/// its content's height, and gives way (and scrolls) once the window has reached its limit.
+fn scroller_fit<'a>(c: &'a mut ChildSpawnerCommands, k: usize, y: f32, padding: UiRect, gap: f32) -> EntityCommands<'a> {
+    c.spawn((Scroller(k), ScrollPosition(Vec2::new(0.0, y)), Node { flex_direction: FlexDirection::Column, flex_shrink: 1.0, min_height: px(0), row_gap: px(gap), padding, overflow: Overflow::scroll_y(), ..default() }))
+}
+
+/// A column's scrolling part: filling the column, or in a window (`win`) as tall as its content.
+fn scroll_part<'a>(c: &'a mut ChildSpawnerCommands, win: bool, k: usize, y: f32, padding: UiRect, gap: f32) -> EntityCommands<'a> {
+    if win { scroller_fit(c, k, y, padding, gap) } else { scroller(c, k, y, padding, gap) }
+}
+
+/// What a window's inside is laid out as: a column that gives way when the window is at its limit.
+fn window_body() -> Node {
+    Node { flex_direction: FlexDirection::Column, flex_shrink: 1.0, min_height: px(0), ..default() }
+}
+
+/// "12 things, 6.4 kg carried": after the You column's title.
+fn carried_note(items: &[ItemDef], inv: &zombye_sim::Inventory) -> String {
+    let n: u32 = inv.carried.iter().map(|s| s.count as u32).sum();
+    let kg: f32 = inv.carried.iter().map(|s| stack_kg(items, s)).sum();
+    format!("{n} {}, {kg:.1} kg carried", if n == 1 { "thing" } else { "things" })
+}
+
 /// The mouse wheel over a column scrolls it.
 fn scroll_frame(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, panel: Res<InventoryPanel>, window: Query<&Window, With<bevy::window::PrimaryWindow>>, mut scrollers: Query<(&Scroller, &ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>, mut scrolls: ResMut<Scrolls>) {
     use bevy::input::mouse::MouseScrollUnit;
@@ -1212,8 +1270,8 @@ fn scroll_frame(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, panel:
 }
 
 /// The top bar: our mark, the screen's name, the hour, and the way out.
-fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
-    c.spawn((Node { height: px(flat::TOP_BAR), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(28), px(0)), border: UiRect::bottom(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|b| {
+fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str, back: Color) {
+    c.spawn((Node { height: px(flat::TOP_BAR), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(28), px(0)), border: UiRect::bottom(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), BackgroundColor(back))).with_children(|b| {
         b.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(18), ..default() }, Pickable::IGNORE)).with_children(|l| {
             // The mark: the road Z, or without the brand's pictures a green head with two eyes.
             if let Some((picture, node)) = crate::release_brand::image(crate::release_brand::Mark::Z, 34.0) {
@@ -1231,15 +1289,17 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
         b.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::axes(px(8), px(6)), ..default() })
             .with_children(|r| {
                 r.spawn((Text::new("Close"), font(flat::BODY), TextColor(DIM), Pickable::IGNORE));
-                flat::key(r, "Tab");
+                if let Some(k) = crate::pad::prompt_action(crate::keys::Action::Inventory) {
+                    flat::key(r, &k);
+                }
             })
             .observe(|_: On<PointerPress>, mut panel: ResMut<InventoryPanel>| panel.open = false);
     });
 }
 
 /// The rail down the left: the frame's screens.
-fn rail(mid: &mut ChildSpawnerCommands, tab: Tab) {
-    mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|r| {
+fn rail(mid: &mut ChildSpawnerCommands, tab: Tab, back: Color) {
+    mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), BackgroundColor(back))).with_children(|r| {
         // Each screen's key, as bound (`keys.rs`).
         use crate::keys::{Action, short};
         for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some(Action::Inventory)), (Tab::Make, "claw_hammer", Some(Action::Make)), (Tab::Build, "wooden_plank", Some(Action::Build)), (Tab::Health, "plasters", Some(Action::Health)), (Tab::Skills, "magazine", Some(Action::Skills))] {
@@ -1273,10 +1333,22 @@ fn rail_tab<'a>(r: &'a mut ChildSpawnerCommands, label: &str, icon: &str, key: O
 }
 
 /// The footer: the latest answer to a request, then what the mouse does.
-fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab) {
-    c.spawn((Node { height: px(flat::FOOTER), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(22), padding: UiRect::axes(px(28), px(0)), border: UiRect::top(px(1)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() }, BorderColor::all(LINE))).with_children(|f| {
+fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab, back: Color, movable: bool) {
+    c.spawn((Node { height: px(flat::FOOTER), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(22), padding: UiRect::axes(px(28), px(0)), border: UiRect::top(px(1)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() }, BorderColor::all(LINE), BackgroundColor(back))).with_children(|f| {
         if let Some((text, ok)) = note {
             f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        }
+        // The controller doesn't move round this screen yet: only the way back.
+        if crate::pad::showing() {
+            let back = match tab {
+                Tab::Health => crate::keys::Action::Health,
+                Tab::Skills => crate::keys::Action::Skills,
+                Tab::Build => crate::keys::Action::Build,
+                _ => crate::keys::Action::Inventory,
+            };
+            let b = crate::pad::prompt_action(back).or_else(|| crate::pad::prompt_action(crate::keys::Action::Inventory)).unwrap_or_else(|| crate::pad::button(crate::pad::Button::B));
+            flat::hint(f, &[&b], "back to the game");
+            return;
         }
         match tab {
             Tab::Health => {
@@ -1304,6 +1376,10 @@ fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab) 
         flat::hint(f, &["Shift", "Click"], "pick a range");
         flat::hint(f, &["Right-click"], "actions");
         flat::hint(f, &["Shift", "1-9"], "onto the hotbar");
+        if movable {
+            flat::hint(f, &["Drag"], "a window's title: move it");
+            flat::hint(f, &["Double-click"], "its title: put it back");
+        }
     });
 }
 
@@ -1324,11 +1400,16 @@ const SLOT: f32 = 92.0;
 
 /// The Gear column: what the hands hold, what is worn and carried place by place, the hotbar,
 /// and at its foot the load.
-fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, bar: Option<&crate::hotbar::Hotbar>, y: f32) {
+#[allow(clippy::too_many_arguments)]
+fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, bar: Option<&crate::hotbar::Hotbar>, y: f32, win: bool) {
     let inv = &v.inventory;
-    mid.spawn((Node { width: percent(27), min_width: px(336), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::right(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
-        scroller(col, 0, y, UiRect::new(px(20), px(20), px(18), px(16)), 8.0).with_children(|s| {
-            column_title(s, "Gear", None);
+    // (In a window, `win`: its title is on the window's strip and its width the window's.)
+    let column = if win { window_body() } else { Node { width: percent(27), min_width: px(336), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::right(px(1)), ..default() } };
+    mid.spawn((column, BorderColor::all(LINE))).with_children(|col| {
+        scroll_part(col, win, 0, y, UiRect::new(px(20), px(20), px(if win { 14 } else { 18 }), px(16)), 8.0).with_children(|s| {
+            if !win {
+                column_title(s, "Gear", None);
+            }
             for (spot, label, empty) in [(Spot::Hand, "Main hand", "Nothing: your fists"), (Spot::OffHand, "Off hand", "Nothing")] {
                 ctx.hand_card(listed, s, body::lines(ctx.items, inv, spot).first().copied(), label, empty, if spot == Spot::Hand { Slot::Hand } else { Slot::OffHand });
             }
@@ -1391,10 +1472,11 @@ fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pr
 /// The You column: the search, sort and chips, then a pane for the pockets and for each bag,
 /// each with its own room; with stacks picked, where to send them, at its foot.
 #[allow(clippy::too_many_arguments)]
-fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, pouches: &[(Pouch, String, f32, f32)], right: Place, y: f32, picked: (usize, f32)) {
+fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, pouches: &[(Pouch, String, f32, f32)], right: Place, y: f32, picked: (usize, f32), win: bool) {
     let inv = &v.inventory;
-    mid.spawn((DropTo::Place(Place::Carried), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() })).with_children(|col| {
-        col.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(10), padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }).with_children(|h| {
+    let column = if win { window_body() } else { Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() } };
+    mid.spawn((DropTo::Place(Place::Carried), column)).with_children(|col| {
+        col.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(10), padding: UiRect::new(px(24), px(24), px(if win { 14 } else { 18 }), px(10)), flex_shrink: 0.0, ..default() }).with_children(|h| {
             find_row(h, ctx.find, ctx.ui);
             h.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(6), row_gap: px(6), ..default() }).with_children(|bar| {
                 flat::chip(bar, "All", ctx.find.groups.is_empty()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.groups.clear());
@@ -1402,11 +1484,11 @@ fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pri
                     flat::chip(bar, g.name(), ctx.find.groups.contains(&g)).observe(move |_: On<PointerPress>, mut find: ResMut<Find>| find.toggle(g));
                 }
             });
-            let n: u32 = inv.carried.iter().map(|s| s.count as u32).sum();
-            let kg: f32 = inv.carried.iter().map(|s| stack_kg(ctx.items, s)).sum();
-            column_title(h, "You", Some(format!("{n} {}, {kg:.1} kg carried", if n == 1 { "thing" } else { "things" })));
+            if !win {
+                column_title(h, "You", Some(carried_note(ctx.items, inv)));
+            }
         });
-        scroller(col, 1, y, UiRect::new(px(24), px(24), px(0), px(16)), 12.0).with_children(|s| {
+        scroll_part(col, win, 1, y, UiRect::new(px(24), px(24), px(0), px(16)), 12.0).with_children(|s| {
             for (p, name, room, used) in pouches {
                 // (A stack whose pouch isn't there, should that ever be: with the pockets.)
                 let here = |s: &ItemStack| s.home == *p || (*p == Pouch::Pockets && !pouches.iter().any(|x| x.0 == s.home));
@@ -1458,7 +1540,7 @@ fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
         ))
         .with_children(|b| {
             b.spawn((Text::new(text), font(flat::BODY), TextColor(color), TextLayout::no_wrap(), Pickable::IGNORE));
-            if !find.typing {
+            if !find.typing && !crate::pad::showing() {
                 flat::key(b, "/");
             }
         })
@@ -1473,12 +1555,16 @@ fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
 
 /// The Nearby column: the open container and the floor in reach, each a pane; a press on a
 /// pane's name makes it the one your things go to. At its foot, everything across at once.
-fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, floor: &[(u32, ItemStack)], right: Place, y: f32) {
+#[allow(clippy::too_many_arguments)]
+fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, floor: &[(u32, ItemStack)], right: Place, y: f32, win: bool) {
     let items = ctx.items;
-    mid.spawn((DropTo::Place(right), Node { width: percent(27), min_width: px(300), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::left(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
-        col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(20), px(20), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| column_title(h, "Nearby", None));
+    let column = if win { window_body() } else { Node { width: percent(27), min_width: px(300), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::left(px(1)), ..default() } };
+    mid.spawn((DropTo::Place(right), column, BorderColor::all(LINE))).with_children(|col| {
+        if !win {
+            col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(20), px(20), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| column_title(h, "Nearby", None));
+        }
         let to_floor = matches!(right, Place::Ground);
-        scroller(col, 2, y, UiRect::new(px(20), px(20), px(0), px(16)), 12.0).with_children(|s| {
+        scroll_part(col, win, 2, y, UiRect::new(px(20), px(20), px(if win { 14 } else { 0 }), px(16)), 12.0).with_children(|s| {
             if let Some(cv) = &v.open {
                 let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
                 let shut = ctx.ui.shut.contains(&Pane::Container);

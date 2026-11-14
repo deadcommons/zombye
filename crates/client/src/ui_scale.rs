@@ -100,6 +100,9 @@ pub struct ClientSettings {
     /// Unused: the inventory's body view is gone (the gear slots took its place). Kept so older
     /// settings files read as they did.
     pub inventory_body: bool,
+    /// Where the inventory screen's Gear, You and Nearby windows were dragged to (`inv_windows.rs`,
+    /// #45): each one's top-left corner in UI pixels, `None` where it starts.
+    pub inventory_windows: [Option<(f32, f32)>; 3],
     /// Zombies you see show through what covers them from the camera (`silhouette.rs`; Shift+F10).
     pub zombie_silhouettes: bool,
     /// Doors and windows a building hides from the camera are outlined through it
@@ -112,8 +115,15 @@ pub struct ClientSettings {
     pub muted: bool,
     /// Start in the first-person view (`camera.rs`; `;` switches while playing).
     pub first_person: bool,
-    /// The window fills the screen, without a border.
+    /// The window fills the screen, without a border. A packaged game starts that way until the
+    /// player chooses ([`ClientSettings::fullscreen_chosen`]); from a checkout it starts windowed.
     pub fullscreen: bool,
+    /// The player picked full screen or a window themselves (the settings' switch, Alt+Enter, F11),
+    /// so `fullscreen` is their choice and not the default (`window_mode.rs`).
+    pub fullscreen_chosen: bool,
+    /// The window's size when it isn't full screen, in UI pixels, as the player last left it
+    /// (`window_mode.rs`; `None`: 1600 x 900). Never used with `--size`.
+    pub window_size: Option<(u32, u32)>,
     /// Frames wait for the screen's refresh (`--novsync` turns it off for a session).
     pub vsync: bool,
     /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
@@ -131,6 +141,13 @@ pub struct ClientSettings {
     /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
     /// over `assets/data/keys.ron`. Only the ones changed.
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
+    /// What the main menu's Host a game screen was last set to (`hosting.rs`).
+    pub host: crate::hosting::HostSetup,
+    /// Keyboard and mouse, the controller, or whichever was touched last (`pad.rs`, #12).
+    pub input: crate::pad::InputSetting,
+    /// The buttons the player picked for the controller (`pad.rs`): an action's id to its
+    /// buttons, over `assets/data/pad.ron`. Only the ones changed.
+    pub pad: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ClientSettings {
@@ -144,13 +161,16 @@ impl Default for ClientSettings {
             server_list: None,
             servers: Vec::new(),
             inventory_body: false,
+            inventory_windows: [None; 3],
             zombie_silhouettes: false,
             opening_hints: true,
             volume: 1.0,
             music: 1.0,
             muted: false,
             first_person: false,
-            fullscreen: false,
+            fullscreen: default_fullscreen(),
+            fullscreen_chosen: false,
+            window_size: None,
             vsync: true,
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
@@ -158,8 +178,24 @@ impl Default for ClientSettings {
             send_reports: true,
             reports_notice_seen: false,
             keys: Default::default(),
+            host: Default::default(),
+            input: crate::pad::InputSetting::Auto,
+            pad: Default::default(),
         }
     }
+}
+
+/// Whether a game whose player hasn't chosen starts full screen: a packaged one does, as players
+/// expect of a game; from a checkout it is a window, so development and its tools are as before.
+pub fn default_fullscreen() -> bool {
+    zombye_net::install::packaged()
+}
+
+/// Whether a game starts full screen: the file's own word once the player has chosen; until then
+/// what the file says or the default, whichever is full screen (a file from before the choice was
+/// kept says "window" only because that was the default then).
+pub fn starts_fullscreen(saved: bool, chosen: bool, default: bool) -> bool {
+    saved || (!chosen && default)
 }
 
 /// The client settings as they are now, and the file they're written to when they change.
@@ -211,6 +247,9 @@ impl SettingsStore {
     pub fn change(&mut self, f: impl FnOnce(&mut ClientSettings)) -> Result<(), String> {
         let mut next = self.settings.clone();
         f(&mut next);
+        if next.fullscreen != self.settings.fullscreen {
+            next.fullscreen_chosen = true;
+        }
         if next == self.settings {
             return Ok(());
         }
@@ -266,6 +305,10 @@ impl ClientSettings {
                 let level = |v: f32| if v.is_finite() { v.clamp(0.0, 2.0) } else { 1.0 };
                 (s.volume, s.music) = (level(s.volume), level(s.music));
                 s.graphics = s.graphics.settled();
+                // A file from before the choice was kept, or one whose player never chose: a
+                // packaged game fills the screen.
+                s.fullscreen = starts_fullscreen(s.fullscreen, s.fullscreen_chosen, default_fullscreen());
+                s.window_size = s.window_size.map(crate::window_mode::sane_size);
                 (s, None)
             }
             Err(e) => (

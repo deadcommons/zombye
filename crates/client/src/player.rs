@@ -71,6 +71,12 @@ pub struct LocalPlayer {
     /// last one sent is kept so a gun put away says "level" once.
     pub pitch: f32,
     sent_pitch: f32,
+    /// The controller (#12): the last input sent said we aim (an attack sent after it is taken),
+    /// a trigger pulled without aiming aims by itself until this time, and the attack waiting for
+    /// that aim to be sent.
+    aim_sent: bool,
+    pad_aim_until: f32,
+    pad_attack: bool,
     last_snapshot_tick: u64,
     /// From the latest snapshot: health, dead, weapon held, action under way.
     pub hp: f32,
@@ -167,7 +173,7 @@ impl LocalPlayer {
     #[cfg(test)]
     pub fn for_test(id: u32, pos: Vec2) -> Self {
         let state = PlayerState::new(pos);
-        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None, car: None }
+        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, aim_sent: false, pad_aim_until: 0.0, pad_attack: false, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None, car: None }
     }
 
     /// How far behind our own survivor the picture of everything else is, in seconds: the inputs
@@ -248,8 +254,10 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player)
-            .add_systems(Update, (toggle_sneak, face_cursor, actions))
+        app.init_resource::<crate::pad::Pad>()
+            .init_resource::<crate::pad::InputMode>()
+            .add_systems(Startup, spawn_player)
+            .add_systems(Update, (toggle_sneak, face_cursor, actions).chain())
             .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), (vehicle_boxes, reconcile).chain().after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
             .init_resource::<ViewFloor>()
@@ -286,6 +294,9 @@ fn spawn_player(
         aiming: false,
         pitch: 0.0,
         sent_pitch: 0.0,
+        aim_sent: false,
+        pad_aim_until: 0.0,
+        pad_attack: false,
         last_snapshot_tick: link.curr.tick,
         hp,
         dead,
@@ -315,8 +326,10 @@ fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
 }
 
 /// One fixed tick of input: send it, and predict its effect with the shared movement code.
+#[allow(clippy::too_many_arguments)]
 fn predict(
     keys: Res<ButtonInput<KeyCode>>,
+    pad: Res<crate::pad::Pad>,
     map: Res<ClientMap>,
     join: Res<JoinInfo>,
     auto: Res<AutoInput>,
@@ -333,9 +346,15 @@ fn predict(
                 dir += d;
             }
         }
+        dir = dir.normalize_or_zero();
+        // The controller's left stick (#12): part of the way over walks slower (the sim scales
+        // the step by the length, at most 1).
+        if pad.stick != Vec2::ZERO {
+            dir = (dir + forward * pad.stick.y + right * pad.stick.x).clamp_length_max(1.0);
+        }
     }
-    let mut run = crate::keys::pressed(&keys, crate::keys::Action::Run);
-    let mut move_dir = Vec2::new(dir.x, dir.z).normalize_or_zero();
+    let mut run = crate::keys::pressed(&keys, crate::keys::Action::Run) || pad.run;
+    let mut move_dir = Vec2::new(dir.x, dir.z);
     if auto.active {
         (move_dir, run) = (auto.move_dir, auto.run);
     }
@@ -364,7 +383,10 @@ fn predict(
         if auto.active {
             DriveInput::default()
         } else {
-            DriveInput { throttle: key(Action::MoveUp) - key(Action::MoveDown), steer: key(Action::MoveRight) - key(Action::MoveLeft), brake: crate::keys::pressed(&keys, Action::Shove) }
+            // On the controller (#12): RT drives, LT brakes and reverses, the left stick steers.
+            let throttle = (key(Action::MoveUp) - key(Action::MoveDown) + pad.rt - pad.lt).clamp(-1.0, 1.0);
+            let steer = (key(Action::MoveRight) - key(Action::MoveLeft) + pad.stick.x).clamp(-1.0, 1.0);
+            DriveInput { throttle, steer, brake: crate::keys::pressed(&keys, Action::Shove) }
         }
     });
     if let Some(car) = me.car {
@@ -388,6 +410,7 @@ fn predict(
         link.send(Intent::Drive { player: me.id, throttle: d.throttle, steer: d.steer, brake: d.brake });
     }
     link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run: input.run, sneak: input.sneak, aim: input.aim });
+    me.aim_sent = input.aim;
 
     if me.pending.len() >= MAX_PENDING {
         me.pending.pop_front();
@@ -651,17 +674,31 @@ fn face_cursor(
     time: Res<Time>,
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
+    pad: (Res<crate::pad::InputMode>, Res<crate::pad::Pad>, Option<Res<crate::fog::FogState>>),
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
+    let (mode, pad, fog) = pad;
     // The health and skills sheets aren't modal (and come back open from the settings file): aim
     // with them up, just not with the pointer on one. The inventory's right button is its menus'.
     let over_panel = crate::hud::panel_under_cursor(windows.single().ok(), &hits).is_some();
-    me.aiming = (auto.active && auto.aim) || (mouse.pressed(MouseButton::Right) && !panel.open && !over_panel);
+    let mouse_aim = mouse.pressed(MouseButton::Right) && !panel.open && !over_panel;
+    // The controller (#12): LT held, or a moment after RT pulled without it.
+    let pad_aim = mode.pad && !auto.active && !panel.open && (pad.aim || time.elapsed_secs() < me.pad_aim_until);
+    me.aiming = (auto.active && auto.aim) || mouse_aim || pad_aim;
     if me.dead {
         return;
     }
     let Ok((mut player, mut tf)) = players.single_mut() else { return };
+    // In the view from above the pad aims with its right stick and the aim assist; in first
+    // person the stick turns the camera and the aim is the middle of the screen, as the mouse's.
+    let axes = cams.single().ok().filter(|(_, _, iso)| !iso.shoulder()).map(|(_, _, iso)| iso.ground_axes());
+    if let Some(axes) = axes.filter(|_| pad_aim && !mouse_aim) {
+        pad_aim_at(&mut me, &pad, axes, &join, &link, fog.as_deref(), Vec2::new(tf.translation.x, tf.translation.z));
+        player.facing = me.aim;
+        tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
+        return;
+    }
     if !me.aiming {
         let target = me.curr.facing;
         let turn = (target - player.facing + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
@@ -703,9 +740,43 @@ fn face_cursor(
     }
 }
 
+/// Aiming on the controller (#12): the right stick says which way (camera-relative), else the way
+/// we face; then the aim assist turns onto a body the fog shows us: a melee weapon's reach and a
+/// wide cone with the stick at rest (a narrower one with it pushed), a gun's range and a narrow
+/// cone (magnetism). A gun is pitched at that body's chest, or level.
+fn pad_aim_at(me: &mut LocalPlayer, pad: &crate::pad::Pad, (forward, right): (Vec3, Vec3), join: &JoinInfo, link: &ServerLink, fog: Option<&crate::fog::FogState>, from: Vec2) {
+    if pad.look != Vec2::ZERO {
+        let d = forward * pad.look.y + right * pad.look.x;
+        me.aim = d.z.atan2(d.x);
+    }
+    let weapon = me.weapon.and_then(|w| join.weapons.get(w as usize));
+    let gun = weapon.and_then(|w| w.ranged.as_ref());
+    let steered = pad.look != Vec2::ZERO;
+    let (reach, cone) = match gun {
+        Some(r) => (r.range, if steered { 6f32 } else { 12.0 }),
+        None => (weapon.map_or(0.6, |w| w.range) + 0.9, if steered { 12f32 } else { 30.0 }),
+    };
+    let seen = |p: Vec2| fog.is_none_or(|f| f.visibility(p) > 0.25);
+    let zombies = link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down | ZombieAnim::GetUp)).map(|z| Vec2::from(z.pos));
+    let pvp = join.combat.pvp;
+    let others = link.curr.players.iter().filter(|p| pvp && p.id != me.id && !p.dead && !p.asleep).map(|p| Vec2::from(p.pos));
+    let target = crate::pad::soft_lock(from, me.aim, reach, cone.to_radians(), zombies.chain(others).filter(|p| seen(*p)));
+    if let Some(t) = target {
+        let to = t - from;
+        me.aim = to.y.atan2(to.x);
+    }
+    me.pitch = match (gun, target) {
+        (Some(_), Some(t)) => level_pitch(t.distance(from)),
+        (Some(_), None) => level_pitch(10.0),
+        (None, _) => 0.0,
+    };
+}
+
 /// How far the cursor's ray may pass from a body's middle and still be on it (a little more than
 /// the body, so a zombie is easy to pick).
 const AIM_PICK: f32 = 0.42;
+/// A trigger pulled without aiming aims for this long (seconds), so the swing goes out aimed.
+const PAD_AIM_SECS: f32 = 0.6;
 /// With the cursor on nothing a gun is held level at this height (the chest) at the cursor's distance.
 const CHEST: f32 = 1.15;
 
@@ -749,6 +820,7 @@ pub fn gun_aim(from: Vec2, origin: Vec3, dir: Vec3, bodies: impl Iterator<Item =
 fn actions(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    pad: Res<crate::pad::Pad>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
     preview: Res<crate::dev_time::LightPreview>,
     morning: Option<Res<crate::firstnight_ui::FirstNightUi>>,
@@ -798,6 +870,18 @@ fn actions(
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
     if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
         me.act(&mut link, &join, ActionKind::Swing, now);
+    }
+    // The controller's trigger (#12): aiming, it swings or shoots; not, it aims by itself (at what
+    // is in front, `pad_aim_at`) and swings once that aim has gone to the server.
+    if pad.attack && !panel.open {
+        me.pad_aim_until = me.pad_aim_until.max(now + PAD_AIM_SECS);
+        me.pad_attack = true;
+    }
+    if me.pad_attack && me.aiming && me.aim_sent {
+        me.pad_attack = false;
+        me.act(&mut link, &join, ActionKind::Swing, now);
+    } else if me.pad_attack && now > me.pad_aim_until {
+        me.pad_attack = false;
     }
     if crate::keys::just_pressed(&keys, Action::Shove) {
         // Space with or without aiming (it goes the way he faces): stomp if a downed zombie lies

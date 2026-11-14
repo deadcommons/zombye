@@ -1,0 +1,21 @@
+// The official servers (the server browser's top section: F7 in the game, or Multiplayer, Join a
+// game on the main menu): the servers the people who make this build of the game run themselves.
+// Shipped empty here: the official build of the game carries its makers' list in its place, and a
+// fork lists its own. Everyone else's servers are community servers (servers.ron).
+//
+// The game reads `$ZOMBYE_OFFICIAL_SERVERS` if set, else `official_servers.ron` in the release
+// brand folder (`$ZOMBYE_RELEASE_BRAND`, or `release-brand` beside the game), else this file. The
+// format is servers.ron's (`featured` means nothing here: the section is in the file's order):
+//
+//   address   host or host:port (port 7777 without). Required.
+//   name      shown until the server answers with its own name.
+//   note      one line: region, what the server is for, when it restarts.
+//
+// (
+//     servers: [
+//         (address: "play.example.org", name: "Example official", note: "EU, PvP"),
+//     ],
+// )
+(
+    servers: [],
+)

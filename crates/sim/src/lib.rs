@@ -18,6 +18,7 @@ pub mod containers;
 pub mod corpses;
 pub mod crafting;
 pub mod difficulty;
+pub mod tune;
 pub mod events;
 pub mod explore;
 pub mod fire;
