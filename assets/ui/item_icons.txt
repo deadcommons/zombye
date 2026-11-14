@@ -107,3 +107,7 @@ spear
 dirty_water_bottle
 petrol_can
 siphon_hose
+car_key
+wrench
+spare_tyre
+engine_parts

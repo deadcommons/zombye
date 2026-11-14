@@ -107,3 +107,7 @@ spear	Spear	Weapon	#9e8059
 dirty_water_bottle	Bottle of dirty water	Drink	#8c9973
 petrol_can	Petrol can	Tool	#bf1f1a
 siphon_hose	Siphon hose	Tool	#33734d
+car_key	Car key	Tool	#b3b3b8
+wrench	Wrench	Tool	#8c949e
+spare_tyre	Spare tyre	Material	#1f1f21
+engine_parts	Engine parts	Material	#66594d

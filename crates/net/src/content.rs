@@ -286,6 +286,17 @@ pub fn load_difficulty(data_dir: &Path) -> Result<zombye_sim::difficulty::Diffic
     zombye_sim::difficulty::parse_difficulty(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What the Sandbox page offers by name (`<data>/sandbox.ron`, [`zombye_sim::difficulty::SandboxOptions`]).
+/// A data folder without the file has none: every value is still under "Everything".
+pub fn load_sandbox(data_dir: &Path) -> Result<zombye_sim::difficulty::SandboxOptions, String> {
+    let path = data_dir.join("sandbox.ron");
+    if !path.exists() {
+        return Ok(Default::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    zombye_sim::difficulty::parse_sandbox(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The benchmark scenarios in `<data>/scenarios.ron` (#29), validated, the items they name checked
 /// against `items` (and the plain items weapons without one get). A data folder without the file
 /// has none.
@@ -315,6 +326,10 @@ pub fn load_vehicles(data_dir: &Path, street_props: &zombye_sim::street_props::S
     let t = &data.tuning;
     if !data.kinds.is_empty() && !items.is_empty() && !items.iter().any(|i| i.id == t.fuel_item && i.fuel_l.is_some()) {
         return Err(format!("{}: tuning.fuel_item {:?} isn't an item with fuel_l in items.ron", path.display(), t.fuel_item));
+    }
+    // Keys, hotwiring and repairs name items that must be there (stage 4).
+    if !data.kinds.is_empty() && !items.is_empty() {
+        data.work.check_items(items).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     for k in &data.kinds {
         if !street_props.kinds.iter().any(|p| p.id == k.prop) {

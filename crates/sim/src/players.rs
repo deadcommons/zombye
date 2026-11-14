@@ -480,6 +480,23 @@ pub struct Player {
     /// and doesn't walk. The vehicle names its driver in the save (`VEHC`), so not here.
     #[serde(skip)]
     pub vehicle: Option<u32>,
+    /// The containers within plain reach of it (#55, `World::containers_near`), nearest first, as
+    /// its client was last told: the inventory screen's Nearby lists them. Kept fresh every few
+    /// ticks (`World::step_item_jobs`). Not saved, not in the state hash: worked out again.
+    #[serde(skip)]
+    pub nearby: Nearby,
+}
+
+/// The containers within reach of a player as its client was last told (#55, [`Player::nearby`]):
+/// a cache for deciding when to send its view again, not part of the player. Any two are equal,
+/// so a loaded world's players equal the saved ones.
+#[derive(Clone, Debug, Default)]
+pub struct Nearby(pub Vec<u32>);
+
+impl PartialEq for Nearby {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -538,6 +555,7 @@ impl Player {
             pitch: 0.0,
             origin: crate::origin::Origin::default(),
             vehicle: None,
+            nearby: Nearby::default(),
         }
     }
 }

@@ -103,6 +103,9 @@ pub struct ZombieTuning {
     pub alert_groan_secs: f32,
     /// Fraction of a sound's radius that carries through walls (no line of sight).
     pub wall_muffle: f32,
+    /// How far every zombie hears, as a multiplier on a sound's radius (1: as the sound says). A
+    /// difficulty's `zombie_hearing`.
+    pub hearing: f32,
 
     // Herding.
     /// A wanderer choosing where to shuffle next heads back toward the zombies round it (within
@@ -236,6 +239,7 @@ impl Default for ZombieTuning {
             groan_max_secs: 12.0,
             alert_groan_secs: 0.8,
             wall_muffle: 0.4,
+            hearing: 1.0,
 
             herd_chance: 0.3,
             herd_radius: 10.0,

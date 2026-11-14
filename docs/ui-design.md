@@ -126,6 +126,14 @@ Every full screen is the same frame, and the screens are its tabs:
   straight on Health and Skills.
 - **Body:** two or three columns divided by hairlines. A column has a title and scrolls on its own,
   up and down only. **Nothing scrolls sideways, ever:** content wraps to the width it has.
+- **Windows, where a screen is used with the game in view** (the Inventory tab, `inv_windows.rs`):
+  on a screen with room for them the columns are windows instead, each as tall as its content,
+  on a light veil (22%) so the game reads round them. They start side by side in the middle of the
+  screen, never spread to its edges: what is used together sits within one glance. A window has a
+  38-pixel title strip (its name in `HEAD` capitals, a quiet note at the right), a `LINE` border,
+  an 8-pixel radius and a backing of `SOLID` at 96%; it is dragged by the strip, remembered, and
+  put back by a double-click on it. With a controller the windows are fixed where they start. A
+  window too small for them (1280 x 720) keeps the columns.
 - **Footer:** the keys that work on this screen, as keycaps with a word each. If an action has no
   place in the footer it doesn't have a hidden key.
 - **Help text** (the Game settings; `help_text.rs`): a player chooses how much the UI explains. Write
@@ -203,7 +211,7 @@ Each is one function in `theme.rs`; a panel never builds its own.
 
 | Screen | Body | Notes |
 |---|---|---|
-| Inventory | Gear (hands, body slots, bag slots, hotbar, load) / You (a pane for the pockets and for each bag) / Nearby (the open container, the floor) | Search, sort, chips and the view switch over the middle column. |
+| Inventory | Gear (hands, body slots, bag slots, hotbar, load) / You (a pane for the pockets and for each bag) / Nearby (the open container, the floor, every other container in reach: searched ones as panes, the rest with a Search button) | Search, sort, chips and the view switch over the middle column. |
 | Make | Recipes by category / the chosen recipe: what goes in, tools, what comes out, the time, Make | Fire and cooking add their recipes here. |
 | Build | What can be built, by category / the chosen piece: materials, tools, where it goes | Barricades first; walls, furniture and bigger works later, in the same list. |
 | Survivor: Info | Who this is: name, Background, days survived, kills / Strengths and Flaws as two lists / appearance | A Strength is green with a plus, a Flaw amber with a minus, each with one line saying what it does. What character creation chose is shown here. |
@@ -211,7 +219,7 @@ Each is one function in `theme.rs`; a panel never builds its own.
 | Survivor: Skills | The skills / the chosen skill: level, progress, what it gives | |
 | Survivor: Protection | The body, part by part / what covers each part and how much it stops, by kind of wound | The Gear column's one-line summary opens it. |
 | Map | Paper, filling the body | The survivor's paper map: printed streets, the rest inked in as it is seen, red pencil for your own marks. Pan and zoom keys in the footer. |
-| Menus, settings, character creation | The frame over an opaque ground, one column of choices and one of detail | |
+| Menus, settings, character creation | The frame over an opaque ground, one column of choices and one of detail | In the brand's look, not the chrome's: see The screens before the game. |
 
 ### What is built
 
@@ -221,6 +229,29 @@ column yet), **Health** (condition and status on the left, wounds as cards with 
 the right) and **Skills** (a card a skill), with the veil at 97.5% so text keeps its contrast over
 sunlit ground. Health and Skills are tabs of their own for now; the Survivor screen will gather them. Build, Survivor, the Map and the menus are other pieces of
 work that move onto these tokens as they land; until then the rail lists only what opens.
+
+## The screens before the game
+
+The logo, the loading screen, the main menu, the settings screen, the new-game screen and the pause
+menu are where the game meets its brand, so they wear the brand's look (decided 13 November 2026)
+while keeping this guide's frame, shapes and behaviour:
+
+- Ground warm charcoal #2B2421, text cream #E9D8BB, quiet text a darker cream (#CDBCA0, 8:1), hairlines
+  and cells cream at 14% and 5%.
+- The one accent is mustard #E0A646 (the main button, the open tab, what is picked), its label in
+  charcoal (7:1). Rust #D45B2C marks a Flaw and what costs you; a Strength keeps zombie green.
+  Red stays for what is wrong.
+- Titles, tabs and buttons in Bebas Neue (`theme::brand`), capitals only; text in Barlow as
+  everywhere; the loading lines in Special Elite (`theme::note`), the survivor's voice, a line at a
+  time.
+- No grain, halftone or wear: those belong on printed things, not on text.
+- Buttons are road signs, as on the website: corners of 5 px and a 2 px outline. The main button
+  (and the page you are on) is mustard with a charcoal outline and a hard rust shadow 5 px down and
+  right, no blur, which closes up while it is held; the others keep their cell fill with a cream
+  outline. List rows keep the hairline (`menu_skin::button`, `sign_shadow`, `press_in`).
+
+The tokens are `menu_skin.rs`'s (and the new-game screen's `flat`, which takes them). Once in the
+game, every panel is this guide's chrome again.
 
 ## The HUD
 

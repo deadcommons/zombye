@@ -244,6 +244,13 @@ const VEHC: [u8; 4] = *b"VEHC";
 /// The vehicles' fuel, engines and parts (`crate::vehicles::Condition`, by vehicle id), written
 /// after `VEHC`; a save without it (from before stage 2) finds them as a new world would.
 const VCND: [u8; 4] = *b"VCND";
+/// The vehicles' locks, keys and crossed wires (`crate::vehicles::Access`, by vehicle id; stage 4),
+/// written after `VCND`; a save without it (from before stage 4) finds them as a new world would.
+const VACC: [u8; 4] = *b"VACC";
+/// Each survivor's Mechanics XP and the XP multiplier its origin gives Mechanics (skills after the
+/// first [`crate::skills::LEGACY_SKILLS`] live here, not in the player's arrays); only survivors
+/// with something to say, so adding it didn't change the format version.
+const MECH: [u8; 4] = *b"MECH";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -870,6 +877,7 @@ impl World {
         if !vehicles.list.is_empty() {
             w.section(VEHC, &encode(&self.vehicle_save()));
             w.section(VCND, &encode(&self.condition_save()));
+            w.section(VACC, &encode(&self.access_save()));
         }
         let world = WorldSave {
             tick: *tick,
@@ -953,6 +961,12 @@ impl World {
         let origins: Vec<(u32, crate::origin::Origin)> = players.iter().filter(|p| !p.origin.is_plain()).map(|p| (p.id, p.origin.clone())).collect();
         if !origins.is_empty() {
             w.section(ORIG, &encode(&origins));
+        }
+        let mech = crate::skills::Skill::Mechanics as usize;
+        let mechanics: Vec<(u32, f32, f32)> =
+            players.iter().filter(|p| p.skills.xp[mech] != 0.0 || p.origin.perks.xp[mech] != 1.0).map(|p| (p.id, p.skills.xp[mech], p.origin.perks.xp[mech])).collect();
+        if !mechanics.is_empty() {
+            w.section(MECH, &encode(&mechanics));
         }
         let maps: Vec<(u32, &crate::explore::Explored)> = players.iter().filter(|p| p.explored.count() > 0).map(|p| (p.id, &p.explored)).collect();
         if !maps.is_empty() {
@@ -1050,6 +1064,7 @@ impl World {
         let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
         let vehicles: Option<crate::vehicles::VehicleSave> = r.optional(VEHC)?.map(|p| decode(VEHC, p)).transpose()?;
         let conditions: Option<Vec<(u32, crate::vehicles::Condition)>> = r.optional(VCND)?.map(|p| decode(VCND, p)).transpose()?;
+        let access: Option<Vec<(u32, crate::vehicles::Access)>> = r.optional(VACC)?.map(|p| decode(VACC, p)).transpose()?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
@@ -1157,6 +1172,9 @@ impl World {
                 if let Some(c) = conditions {
                     w.restore_conditions(c).map_err(save_check::invalid)?;
                 }
+                if let Some(a) = access {
+                    w.restore_access(a).map_err(save_check::invalid)?;
+                }
                 if dropped > 0 {
                     notes.push(format!("{dropped} vehicles of kinds the game no longer has were dropped"));
                 }
@@ -1221,6 +1239,7 @@ impl World {
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut origins: Option<Vec<(u32, crate::origin::Origin)>> = None;
+        let mut mechanics: Option<Vec<(u32, f32, f32)>> = None;
         let mut maps: Option<Vec<(u32, crate::explore::Explored)>> = None;
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
@@ -1280,6 +1299,10 @@ impl World {
                 origins = Some(decode(ORIG, payload)?);
                 continue;
             }
+            if tag == MECH && mechanics.is_none() {
+                mechanics = Some(decode(MECH, payload)?);
+                continue;
+            }
             if tag == XPLR && maps.is_none() {
                 maps = Some(decode(XPLR, payload)?);
                 continue;
@@ -1336,7 +1359,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || weather.is_some() || seats.is_some() || dead.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || mechanics.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || weather.is_some() || seats.is_some() || dead.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1367,6 +1390,17 @@ impl World {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("an origin for player {id}, who isn't in the save")))?;
             origin.check().map_err(|why| save_check::invalid(format!("player {id}'s origin: {why}")))?;
             p.origin = origin;
+        }
+        // Mechanics (stage 4 of cars), after the origins: its XP and the origin's multiplier.
+        for (id, xp, mult) in mechanics.unwrap_or_default() {
+            let max = w.config.skills.max_xp();
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("Mechanics XP for player {id}, who isn't in the save")))?;
+            if !(xp.is_finite() && (0.0..=max).contains(&xp) && mult.is_finite() && (0.0..=100.0).contains(&mult)) {
+                return Err(save_check::invalid(format!("player {id}: Mechanics XP {xp} (0 to {max}), multiplier {mult} (0 to 100)")));
+            }
+            let mech = crate::skills::Skill::Mechanics as usize;
+            p.skills.xp[mech] = xp;
+            p.origin.perks.xp[mech] = mult;
         }
         for (id, seen) in maps.unwrap_or_default() {
             let (mw, mh, buildings) = (w.map.width(), w.map.height(), w.map.buildings.len());
@@ -1599,6 +1633,8 @@ impl World {
         }
         // No tick has run since: only the tier counts are known.
         [w.stats.active, w.stats.near, w.stats.virtual_] = w.tier_counts();
+        // The containers each player has within reach (#55), as a tick would leave them.
+        w.fill_nearby();
         Ok(Loaded { world: w, notes })
     }
 }

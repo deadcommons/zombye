@@ -312,8 +312,23 @@ pub struct ContainerView {
     pub stacks: Vec<ItemStack>,
 }
 
+/// A container within reach other than the open one (#55), for the inventory screen's Nearby.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NearbyView {
+    pub id: u32,
+    /// Its kind (an id in `containers.ron`) and name.
+    pub kind: String,
+    pub name: String,
+    pub room_l: f32,
+    /// How long searching it would take this player now (s).
+    pub search_secs: f32,
+    /// What it holds once anyone has searched it; `None` until then (it is filled on its first
+    /// search, so what an unsearched one holds isn't known yet, even to the server).
+    pub stacks: Option<Vec<ItemStack>>,
+}
+
 /// The part of a player only its own client gets: everything it has, its load, the container it
-/// has open, and its wounds and illnesses.
+/// has open, the others within reach, and its wounds and illnesses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PrivateView {
     pub player: u32,
@@ -322,6 +337,8 @@ pub struct PrivateView {
     /// The weight past which nothing more can be picked up (kg).
     pub max_kg: f32,
     pub open: Option<ContainerView>,
+    /// The other containers within reach, nearest first (#55, `World::containers_near`).
+    pub nearby: Vec<NearbyView>,
     /// Wounds by body part, pain, the infection once it shows (#9).
     pub health: HealthView,
     /// Hunger, thirst, tiredness (to 1%), sleep and soreness (#11).
@@ -348,6 +365,18 @@ impl PrivateView {
             let def = world.container_def(&site);
             Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
         });
+        // (Worked out now, not from `Player::nearby`, which only says when to send this again.)
+        let nearby = world
+            .containers_near(id)
+            .iter()
+            .filter(|&&c| p.open != Some(c))
+            .filter_map(|&c| {
+                let site = world.container(c)?;
+                let def = world.container_def(&site);
+                let stacks = world.container_contents(c).map(<[_]>::to_vec);
+                Some(NearbyView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, search_secs: world.search_secs(id, c).unwrap_or(def.search_secs), stacks })
+            })
+            .collect();
         let carry = world.carry(p);
         let health = world.health_view(id).unwrap_or_default();
         let needs = world.needs_view(id).unwrap_or_default();
@@ -355,7 +384,7 @@ impl PrivateView {
         let jobs = p.jobs.iter().map(|j| j.kind).collect();
         let frisk = p.frisking.and_then(|t| Some(FriskView { target: t, inventory: world.player(t)?.inventory.clone() }));
         let restraint = p.restraint.map(|r| r.item);
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint, homes: p.inventory.homes() })
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, nearby, health, needs, skills, jobs, frisk, restraint, homes: p.inventory.homes() })
     }
 
     /// After a trip over the network: put each carried stack back in its pouch.
@@ -659,7 +688,7 @@ impl Snapshot {
             water_on: world.water_on(),
             cisterns: world.cisterns_taken(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
-            vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
+            vehicles: world.vehicle_views(),
         }
     }
 
@@ -728,10 +757,10 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         return;
     }
     // At the wheel (`zombye_sim::vehicles`) a survivor drives and can eat, drink, treat its
-    // wounds, craft and move things between its pockets and bags; nothing else.
+    // wounds, craft, move things between its pockets and bags, and open the glovebox; nothing else.
     if let Some(player) = intent.action_by()
         && world.in_vehicle(player)
-        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. })
+        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. } | Intent::Search { .. })
     {
         return;
     }

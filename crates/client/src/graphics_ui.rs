@@ -73,9 +73,9 @@ pub fn auto_choice(mean_ms: f32) -> Preset {
 pub fn describe(p: Preset) -> &'static str {
     match p {
         Preset::Low => "Thin grass, no post effects, 2048 shadow map, 2x MSAA, 3D at 60% on Retina. For slow machines.",
-        Preset::Medium => "Most of the look: lighter grass, no tilt-shift or sky light, 2048 shadow map, 3D at 75% on Retina.",
-        Preset::High => "The look the game is made to: full grass and every effect but sky light, 3D at 75% on Retina, UI sharp.",
-        Preset::Ultra => "Denser grass, an 8192 shadow map, sky light in the shade and the 3D at full Retina resolution.",
+        Preset::Medium => "Most of the look: lighter grass, no tilt-shift, soft shadows or ambient occlusion, 2048 shadow map.",
+        Preset::High => "The look the game is made to: full grass and every effect but sky light, 3D at full resolution.",
+        Preset::Ultra => "Denser grass, an 8192 shadow map and sky light in the shade.",
         Preset::Auto => "Plays a few seconds at High, measures, and keeps what this machine holds.",
         Preset::Custom => "Set by command-line flags or by hand in settings.ron.",
     }

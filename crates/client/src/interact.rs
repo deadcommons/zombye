@@ -62,6 +62,8 @@ impl Faced {
         match self {
             Faced::Thing { lines, .. } => lines.len() > 1,
             Faced::Floor(..) => true,
+            // A car's menu: the lock, the boot and glovebox, hotwiring, repairs (stage 4).
+            Faced::Exit | Faced::Enter(Some(_)) => true,
             _ => false,
         }
     }
@@ -110,7 +112,7 @@ fn look(
     let sites = sites.get_or_insert_with(|| zombye_sim::containers::find_sites(&map.0, &join.containers));
     let switches = switches.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
     let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
-    let thing = world_actions::faced(&map.0, sites, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
+    let thing = world_actions::faced(&map.0, sites, join.containers.front_slack_m, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
     let menu = |t: Target, at: Vec2| {
         let (title, lines) = world_actions::entries(t, &map.0, sites, &join.containers, &join.items, &join.builds, &join.blind_tag, join.fire.reach, me.id, pos, link.own(me.id));
         (!lines.is_empty()).then_some(Faced::Thing { title, lines, at })
@@ -148,6 +150,7 @@ fn press(
     mut link: ResMut<ServerLink>,
     mut menu: ResMut<ItemMenu>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    (mode, mut wheel): (Res<crate::pad::InputMode>, ResMut<crate::wheel::Wheel>),
     mut down: Local<Option<f32>>,
     mut held: Local<bool>,
 ) {
@@ -184,10 +187,25 @@ fn press(
             Some(crate::render_scale::from_view(camera, window, v))
         };
         match &facing.0 {
+            // On the controller, a wheel round the middle of the screen (`wheel.rs`).
+            Some(Faced::Thing { title, lines, .. }) if mode.pad => wheel.show(crate::wheel::Kind::Actions, title.clone(), crate::wheel::action_entries(lines)),
             Some(Faced::Thing { title, lines, at }) => menu.show_world(title.clone(), lines.clone(), spot(*at).unwrap_or(Vec2::splat(200.0))),
             Some(Faced::Floor(id, _)) => {
                 let at = link.curr.items.iter().find(|i| i.id == *id).map(|i| i.pos).unwrap_or(me.curr.pos);
                 crate::inventory_ui::open_menu(&mut menu, &link, &join, me.id, Place::Ground, *id, spot(at));
+            }
+            Some(Faced::Exit | Faced::Enter(Some(_))) => {
+                let id = match &facing.0 {
+                    Some(Faced::Enter(Some(id))) => Some(*id),
+                    _ => me.car.map(|c| c.id),
+                };
+                match id.and_then(|id| link.curr.vehicles.iter().find(|v| v.id == id)) {
+                    Some(v) => {
+                        let (title, lines) = world_actions::car_entries(v, &join.vehicles, &join.items, me.id, link.own(me.id));
+                        menu.show_world(title, lines, spot(v.state.pos).unwrap_or(Vec2::splat(200.0)));
+                    }
+                    None => *held = false,
+                }
             }
             // Nothing with more than one thing to do: a hold is a tap.
             _ => *held = false,
@@ -288,7 +306,7 @@ fn prompt(
     };
     let (does, thing) = f.primary();
     let more = f.has_more() && crate::help_text::keys();
-    let key = keys::short(Action::Interact);
+    let key = crate::pad::prompt_action(Action::Interact).unwrap_or_else(|| keys::short(Action::Interact));
     let now = (does, thing, more, key);
     *vis = Visibility::Inherited;
     if shown.as_ref() == Some(&now) {

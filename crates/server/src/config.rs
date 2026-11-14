@@ -37,12 +37,18 @@ pub struct ServerConfig {
     pub agents: Option<AgentsRule>,
     pub budget_kb: Option<u32>,
     pub allow_dev: bool,
+    /// Stop (saving) once nobody has been on for this many seconds. Left out: never.
+    pub stop_when_empty_secs: Option<f32>,
     /// `None` only when the file says `save: None`: a world that is never saved.
     pub save: Option<PathBuf>,
     pub autosave_mins: Option<f64>,
     pub seed: Option<u64>,
     pub map_chunks: Option<u32>,
     pub zombies: Option<u32>,
+    /// A new world's difficulty (#38): a preset's id, a Sandbox setup file and tuning numbers by path.
+    pub difficulty: Option<String>,
+    pub sandbox: Option<PathBuf>,
+    pub set: std::collections::BTreeMap<String, String>,
     pub load_anyway: bool,
     pub data: Option<PathBuf>,
     pub admin: Option<AdminConfig>,
@@ -66,11 +72,15 @@ impl Default for ServerConfig {
             agents: None,
             budget_kb: None,
             allow_dev: false,
+            stop_when_empty_secs: None,
             save: Some(PathBuf::from(DEFAULT_SAVE)),
             autosave_mins: None,
             seed: None,
             map_chunks: None,
             zombies: None,
+            difficulty: None,
+            sandbox: None,
+            set: Default::default(),
             load_anyway: false,
             data: None,
             admin: None,
@@ -166,11 +176,17 @@ impl ServerConfig {
             AgentsRule::Marked => "marked".to_string(),
         }));
         put("--budget", self.budget_kb.map(|kb| kb.to_string()));
+        put("--stop-when-empty", self.stop_when_empty_secs.map(|s| s.to_string()));
         put("--save", self.save.as_ref().filter(|p| !p.as_os_str().is_empty()).map(path));
         put("--autosave-mins", self.autosave_mins.map(|m| m.to_string()));
         put("--seed", self.seed.map(|s| s.to_string()));
         put("--map-chunks", self.map_chunks.map(|n| n.to_string()));
         put("--zombies", self.zombies.map(|n| n.to_string()));
+        put("--difficulty", self.difficulty.clone().filter(|d| !d.trim().is_empty()));
+        put("--sandbox", self.sandbox.as_ref().map(path));
+        for (k, v) in &self.set {
+            put("--set", Some(format!("{k}={v}")));
+        }
         put("--data", self.data.as_ref().map(path));
         if let Some(admin) = &self.admin {
             put("--admin-mcp", Some(admin.listen.clone().unwrap_or_default()));
@@ -267,13 +283,13 @@ mod tests {
         assert_eq!((from_file.pvp, from_file.admin.is_none()), (None, true));
         assert_eq!((value(&args, "--seed"), value(&args, "--map-chunks"), value(&args, "--autosave-mins")), (Some("1"), Some("30"), Some("5")));
         assert_eq!(value(&args, "--save"), Some("/srv/zombye/world.zsave"));
-        for unset in ["--zombies", "--data", "--allow-dev", "--load-anyway", "--admin-mcp", "--pvp", "--spawn", "--fair-sight", "--password"] {
+        for unset in ["--stop-when-empty", "--zombies", "--data", "--allow-dev", "--load-anyway", "--admin-mcp", "--pvp", "--spawn", "--fair-sight", "--password"] {
             assert!(!args.iter().any(|a| a == unset), "{unset} in {args:?}");
         }
         // Every field is in it, set or as a commented example.
         for field in [
-            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "allow_dev", "save",
-            "autosave_mins", "seed", "map_chunks", "zombies", "load_anyway", "data", "admin", "token", "origins",
+            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "allow_dev", "stop_when_empty_secs", "save",
+            "autosave_mins", "seed", "map_chunks", "zombies", "difficulty", "sandbox", "set", "load_anyway", "data", "admin", "token", "origins",
         ] {
             assert!(TEMPLATE.contains(&format!("{field}:")), "{field} is explained in the template");
         }
@@ -281,8 +297,15 @@ mod tests {
         let all: String = TEMPLATE.lines().map(|l| l.trim_start().strip_prefix("// ").filter(|rest| rest.split_once(':').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))).unwrap_or(l)).collect::<Vec<_>>().join("\n");
         let all = ServerConfig::parse(&all).unwrap_or_else(|e| panic!("{e} in:\n{all}"));
         assert_eq!((all.pvp, all.spawn, all.fair_sight, all.zombies), (Some(true), Some(SpawnRule::Spread), Some(true), Some(3000)));
+        assert_eq!((all.difficulty.as_deref(), all.set.get("zombie.memory_secs").map(String::as_str)), (Some("hard_times"), Some("30")));
+        let with = merge(&[], ServerConfig { set: all.set.clone(), difficulty: all.difficulty.clone(), ..ServerConfig::default() }.flags(Path::new("."), false));
+        assert!(with.windows(2).any(|w| w[0] == "--set" && w[1] == "zombie.memory_secs=30") && with.windows(2).any(|w| w[0] == "--difficulty" && w[1] == "hard_times"));
         assert_eq!(all.admin.unwrap().token.as_deref(), Some("a-long-secret-token"));
         assert_eq!((all.camera, all.agents), (Some(CameraRule::Isometric), Some(AgentsRule::Marked)));
+        assert_eq!(all.stop_when_empty_secs, Some(60.0));
+        let stops = merge(&[], ServerConfig { stop_when_empty_secs: Some(60.0), ..ServerConfig::default() }.flags(Path::new("."), false));
+        assert_eq!(HostArgs::parse(&stops, None).unwrap().stop_when_empty, Some(std::time::Duration::from_secs(60)));
+        assert!(HostArgs::parse(&strings(&["--host", "--stop-when-empty", "soon"]), None).err().unwrap().contains("--stop-when-empty"));
         assert_eq!(all.start_kit, Some(vec![KitItem { item: "water_bottle".into(), count: 1 }, KitItem { item: "rag".into(), count: 2 }]));
         // The template leaves the start kit to the game data, and its example is one the shipped items take.
         assert!(!args.iter().any(|a| a == "--start-kit") && from_file.start_kit.is_none());
@@ -294,6 +317,19 @@ mod tests {
 
     /// The rules of #69 (the camera, agents, the start kit) are read from the file, and a kit of
     /// things the game data hasn't got is refused by name.
+    /// The config the game writes when a player hosts from its menu (`crates/client/src/hosting.rs`,
+    /// `config_text`, whose own test holds it to this shape): every field is one this parser knows.
+    #[test]
+    fn the_game_menus_hosted_config_is_read() {
+        let text = "// Written by the game.\n(\n    name: \"ada's game\",\n    listen: \"0.0.0.0:7790\",\n    max_players: 4,\n    password: \"say \\\"friend\\\"\",\n    pvp: false,\n    stop_when_empty_secs: 60,\n    save: \"world.zsave\",\n    seed: 42,\n    data: \"/games/zombye/assets/data\",\n)\n";
+        let c = ServerConfig::parse(text).unwrap();
+        assert_eq!((c.name.as_deref(), c.max_players, c.pvp, c.stop_when_empty_secs, c.seed), (Some("ada's game"), Some(4), Some(false), Some(60.0), Some(42)));
+        let args = merge(&[], c.flags(Path::new("/saves/hosted"), false));
+        assert_eq!(value(&args, "--password"), Some("say \"friend\""));
+        assert_eq!(value(&args, "--stop-when-empty"), Some("60"));
+        assert_eq!(value(&args, "--data"), Some("/games/zombye/assets/data"));
+    }
+
     #[test]
     fn the_rules_are_read_from_the_file() {
         use zombye_net::wire::{Agents, Camera};

@@ -91,4 +91,47 @@
         fuel_item: "petrol_can",
         siphon_tag: "siphons",
     ),
+    // Keys, hotwiring, the boot and glovebox, and repairs (stage 4; zombye_sim::vehicles::WorkTuning).
+    work: (
+        // A car is found `locked` (a chance), with its key in the ignition (`ignition`; such a car
+        // is never locked), in its glovebox (`glovebox_key`), or nowhere. A key is the item
+        // `key_item`; the car it opens rides on the key. With the key on the driver, in the
+        // ignition, or the wires crossed, the engine starts.
+        key_item: "car_key",
+        locked: 0.6,
+        ignition: 0.1,
+        glovebox_key: 0.2,
+        // Hotwiring, from the wheel with a tool tagged `hotwire_tag` (the screwdriver): a try takes
+        // `hotwire_secs` (Mechanics makes it quicker) and works `hotwire_chance` of the time
+        // (+8% a Mechanics level, at most 95%), with a little noise.
+        hotwire_tag: "hotwires",
+        hotwire_secs: 10.0,
+        hotwire_chance: 0.25,
+        hotwire_noise: 4.0,
+        // Smashing a window of a locked car to get in: what it takes off the windows (0 to 1)
+        // and its noise; locking or unlocking with the key: its click.
+        break_in_windows: 0.3,
+        break_in_noise: 35.0,
+        lock_noise: 6.0,
+        // The container kinds (containers.ron) a car's boot and glovebox are.
+        boot: "boot",
+        glovebox: "glovebox",
+        // How far from a car (m, to its box) a survivor can work on it.
+        reach: 1.4,
+        // Repairs: a part (Engine, Tyres, Windows, Body), what it uses up (`inputs`) and needs to
+        // hand (`tools`, an item or a tag), how much of the part it mends at Mechanics 0 (each
+        // level +6%) and the most it can bring it to (`up_to`), the seconds it takes (each level
+        // 6% less) and the Mechanics `level` it needs. Each repair done gives Mechanics XP.
+        repairs: [
+            (part: Engine, name: "Fix the engine", inputs: [(item: "engine_parts", count: 1)], tools: [Tag("wrenches")],
+             mends: 0.4, secs: 30.0, level: 1),
+            (part: Tyres, name: "Change a tyre", inputs: [(item: "spare_tyre", count: 1)], tools: [Tag("wrenches")],
+             mends: 0.5, secs: 20.0),
+            (part: Windows, name: "Tape plastic over a window", inputs: [(item: "plastic_bag", count: 1), (item: "duct_tape", count: 1)],
+             mends: 0.25, up_to: 0.6, secs: 8.0),
+            (part: Body, name: "Beat out the dents", tools: [Tag("hammers")], mends: 0.15, up_to: 0.7, secs: 15.0),
+            (part: Body, name: "Patch the body", inputs: [(item: "duct_tape", count: 1), (item: "wooden_plank", count: 1)], tools: [Tag("hammers")],
+             mends: 0.3, up_to: 0.9, secs: 25.0, level: 2),
+        ],
+    ),
 )

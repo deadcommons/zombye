@@ -22,10 +22,15 @@
 //! click, a request crossing a snapshot) queues nothing more and refuses nothing.
 //!
 //! **Containers** ([`crate::containers`]) are opened by searching them (`Search`) from within
-//! [`CONTAINER_REACH`] of the furniture's nearest edge, in its room (E picks the one faced, nearest
+//! [`CONTAINER_REACH`] of the furniture's nearest edge, in its room, standing in front of it (its
+//! `facing`; `ContainerSite::in_front`) unless its kind opens from any side (E picks the one faced, nearest
 //! first, else the nearest): filled on first open, stored sparsely in the world from then on
 //! (`World::opened`), and open to the searcher until it is [`CONTAINER_KEEP_OPEN`] away or leaves
 //! the room. E with no container and nothing on the floor gets one plain answer ([`NOTHING_HERE`]).
+//! A container *named* in the search (the inventory screen's Nearby, #55) is searched from any side
+//! within reach: only E keeps to the front, so it can't steal the key from a door. One searched
+//! already, by anyone, is taken from and put into from within reach without opening it again
+//! (`World::usable`); each player's [`Player::nearby`] lists the containers in reach for its client.
 //! **The floor** is the world's ground items: those within
 //! [`PICKUP_REACH`](crate::combat::PICKUP_REACH) of a player with no wall, shut window or door or
 //! fence between (furniture doesn't stop a hand) are its floor; snapshots send each player its floor.
@@ -54,6 +59,8 @@ pub const CONTAINER_KEEP_OPEN: f32 = 2.2;
 /// E prefers a container within this angle of where the player faces (to the nearest point of the
 /// furniture), nearest first; with none there, the nearest in reach.
 const FACING_DEGREES: f32 = 60.0;
+/// How often (ticks) each player's list of containers within reach is worked out again (#55).
+const NEARBY_EVERY: u64 = 5;
 /// How far up or down a flight of stairs a hand reaches for something lying on it (m).
 const STAIR_REACH: f32 = 1.2;
 /// What E says with nothing on the floor within reach and no container to search.
@@ -499,6 +506,11 @@ pub enum JobKind {
     /// onto `edge`, or (`add: false`) one off it. After `Blind`, so saves from before it read as
     /// they did.
     Build { edge: crate::map::EdgeRef, build: u16, add: bool },
+    /// Cars (stage 4, [`crate::vehicles`]): a try at crossing the wires of vehicle `vehicle`, from
+    /// its wheel. After `Build`, so saves from before it read as they did.
+    Hotwire { vehicle: u32 },
+    /// Cars: repair `repair` (an index into `vehicles.ron`'s `work.repairs`) on vehicle `vehicle`.
+    Repair { vehicle: u32, repair: u8 },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -554,6 +566,9 @@ impl World {
     pub fn container(&self, id: u32) -> Option<ContainerSite> {
         if crate::corpses::corpse_zombie(id).is_some() {
             return self.corpse_site(id);
+        }
+        if crate::vehicles::vehicle_of_container(id).is_some() {
+            return self.vehicle_site(id);
         }
         self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| self.sites[k].clone())
     }
@@ -668,9 +683,10 @@ impl World {
     }
 
     /// Can player `p` open container `site`? Same room, within [`CONTAINER_REACH`] of the nearest
-    /// edge of the furniture.
+    /// edge of the furniture, and in front of it (not beside or behind it:
+    /// [`ContainerSite::in_front`], `containers.ron`'s `front_slack_m`).
     fn reaches(&self, p: &Player, site: &ContainerSite) -> bool {
-        self.within(p, site, CONTAINER_REACH)
+        self.within(p, site, CONTAINER_REACH) && site.in_front(p.state.pos, self.config.containers.front_slack_m)
     }
 
     /// Is container `site` still usable by player `p`, which has it open? Same room, within
@@ -679,8 +695,15 @@ impl World {
         p.open == Some(site.id) && self.within(p, site, CONTAINER_KEEP_OPEN)
     }
 
+    /// Can player `p` take from and put into container `site`? The one it has open, while it
+    /// stays open; or one searched already (by anyone) within plain reach, from any side (#55):
+    /// the inventory screen's Nearby works with it without opening it.
+    fn usable(&self, p: &Player, site: &ContainerSite) -> bool {
+        self.keeps_open(p, site) || (self.opened.contains_key(&site.id) && self.within(p, site, CONTAINER_REACH))
+    }
+
     fn within(&self, p: &Player, site: &ContainerSite, reach: f32) -> bool {
-        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach
+        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach && self.vehicle_container_open_to(p, site.id)
     }
 
     /// The container player `id` faces within reach, if any: of those within [`FACING_DEGREES`]
@@ -694,7 +717,8 @@ impl World {
             let to = s.nearest(pos) - pos;
             to.length() < 0.05 || ahead.dot(to.normalize()) >= cone
         };
-        let bodies = self.corpses_near(pos, CONTAINER_REACH);
+        let mut bodies = self.corpses_near(pos, CONTAINER_REACH);
+        bodies.extend(self.vehicle_sites_near(pos, CONTAINER_REACH));
         self.sites
             .iter()
             .chain(bodies.iter())
@@ -706,10 +730,61 @@ impl World {
     /// The containers player `id` can reach, nearest first.
     pub fn containers_in_reach(&self, id: u32) -> Vec<u32> {
         let Some(p) = self.player(id) else { return Vec::new() };
-        let bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        let mut bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        bodies.extend(self.vehicle_sites_near(p.state.pos, CONTAINER_REACH));
         let mut v: Vec<&ContainerSite> = self.sites.iter().chain(bodies.iter()).filter(|s| self.reaches(p, s)).collect();
         v.sort_by(|a, b| a.distance(p.state.pos).total_cmp(&b.distance(p.state.pos)).then(a.id.cmp(&b.id)));
         v.into_iter().map(|s| s.id).collect()
+    }
+
+    /// The containers player `id` could search from where it stands by choosing one (#55: the
+    /// inventory screen's Nearby, `Search` with a container named), nearest first: same room,
+    /// within [`CONTAINER_REACH`], from any side. Only E, which takes what is in front of it,
+    /// keeps to [`World::containers_in_reach`].
+    pub fn containers_near(&self, id: u32) -> Vec<u32> {
+        let Some(p) = self.player(id) else { return Vec::new() };
+        if p.dead {
+            return Vec::new();
+        }
+        let mut bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        bodies.extend(self.vehicle_sites_near(p.state.pos, CONTAINER_REACH));
+        let (pos, level) = (p.state.pos, p.state.level);
+        let room = self.map.room_on(level, pos);
+        // (The same rule as `within`, the cheap tests first: it runs for every player every few ticks.)
+        let mut v: Vec<(f32, u32)> = self
+            .sites
+            .iter()
+            .chain(bodies.iter())
+            .filter(|s| s.level == level && s.room == room)
+            .map(|s| (s.distance(pos), s))
+            .filter(|(d, s)| *d <= CONTAINER_REACH && self.vehicle_container_open_to(p, s.id))
+            .map(|(d, s)| (d, s.id))
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        v.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Bring every player's [`Player::nearby`] up to date (every [`NEARBY_EVERY`] ticks), and
+    /// send the view again to those whose set changed.
+    fn refresh_nearby(&mut self) {
+        if self.tick % NEARBY_EVERY != 0 {
+            return;
+        }
+        for pi in 0..self.players.len() {
+            let id = self.players[pi].id;
+            let near = self.containers_near(id);
+            if near != self.players[pi].nearby.0 {
+                self.players[pi].nearby.0 = near;
+                self.private_dirty.insert(id);
+            }
+        }
+    }
+
+    /// Every player's [`Player::nearby`] worked out now, telling nobody (a world just loaded).
+    pub(crate) fn fill_nearby(&mut self) {
+        for pi in 0..self.players.len() {
+            self.players[pi].nearby.0 = self.containers_near(self.players[pi].id);
+        }
     }
 
     /// The ground items player `id` can reach (its floor), nearest first.
@@ -766,7 +841,7 @@ impl World {
             Place::Carried => p.inventory.carried.get(index as usize).copied(),
             Place::Worn => p.inventory.worn.get(index as usize).copied(),
             Place::Slot(s) => p.inventory.slot(s),
-            Place::Container(c) => (p.open == Some(c)).then(|| self.opened.get(&c)?.get(index as usize).copied()).flatten(),
+            Place::Container(c) => self.container(c).filter(|s| self.usable(p, s)).and_then(|_| self.opened.get(&c)?.get(index as usize).copied()),
             Place::Ground => self.items.iter().find(|it| it.id == index && self.floor_reaches(p, it)).map(|it| it.stack),
             Place::Pouch(_) => None,
         }
@@ -860,7 +935,8 @@ impl World {
                 Some(it) => format!("the {} is out of reach", lower(&self.item_def(it.stack.item).name)),
                 None => "that's no longer on the floor".into(),
             },
-            Place::Container(c) if p.open != Some(c) => "that container isn't open (search it first)".into(),
+            Place::Container(c) if !self.opened.contains_key(&c) => "that container isn't open (search it first)".into(),
+            Place::Container(c) if !self.container(c).is_some_and(|s| self.usable(p, &s)) => "that container is out of reach".into(),
             Place::Container(_) => "that's no longer in there".into(),
             Place::Slot(_) => "nothing there".into(),
             Place::Carried | Place::Worn | Place::Pouch(_) => "you don't have that any more".into(),
@@ -958,25 +1034,38 @@ impl World {
             // Already on it.
             return Ok(());
         }
-        // Open already, it reopens (quickly) from as far as it would stay open.
-        if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
+        // E took the one in front (`container_in_reach`); one named (the inventory screen's Nearby,
+        // #55) is searched from any side within reach. Open already, it reopens (quickly) from as
+        // far as it would stay open.
+        if !(self.within(p, &site, CONTAINER_REACH) || self.keeps_open(p, &site)) {
             return self.refuse(id, format!("the {name} is out of reach"));
         }
-        let t = &self.config.carry;
-        let secs = if self.opened.contains_key(&c) {
-            t.reopen_secs
-        } else {
-            let sneak = if self.players[pi].state.stance == Stance::Sneak { t.sneak_search_mult } else { 1.0 };
-            // Scavenging (#46) makes first searches faster.
-            let skill = self.config.skills.search_time_mult(self.skill_level(pi, crate::skills::Skill::Scavenging));
-            self.container_def(&site).search_secs * sneak * skill
-        };
+        let secs = self.search_secs_of(pi, &site);
         self.queue_job(id, JobKind::Search { container: c }, secs)
+    }
+
+    /// How long player `id` would take to search container `c` now (seconds): its search time the
+    /// first time (longer sneaking, shorter with Scavenging), a moment once it has been searched.
+    pub fn search_secs(&self, id: u32, c: u32) -> Option<f32> {
+        let pi = self.players.iter().position(|p| p.id == id)?;
+        Some(self.search_secs_of(pi, &self.container(c)?))
+    }
+
+    fn search_secs_of(&self, pi: usize, site: &ContainerSite) -> f32 {
+        let t = &self.config.carry;
+        if self.opened.contains_key(&site.id) {
+            return t.reopen_secs;
+        }
+        let sneak = if self.players[pi].state.stance == Stance::Sneak { t.sneak_search_mult } else { 1.0 };
+        // Scavenging (#46) makes first searches faster.
+        let skill = self.config.skills.search_time_mult(self.skill_level(pi, crate::skills::Skill::Scavenging));
+        self.container_def(site).search_secs * sneak * skill
     }
 
     /// Count down every player's first job, and do the ones that are due; close containers players
     /// have walked away from. Runs each tick after movement.
     pub(crate) fn step_item_jobs(&mut self) {
+        self.refresh_nearby();
         for pi in 0..self.players.len() {
             self.step_jobs_of(pi);
             // Treating (first aid) means standing still from the next tick, until it's done.
@@ -1022,6 +1111,8 @@ impl World {
                 JobKind::Reload { spare } => self.do_reload(pi, spare),
                 JobKind::Blind { edge, fit } => self.do_blind(pi, edge, fit),
                 JobKind::Build { edge, build, add } => self.do_build(pi, edge, build, add),
+                JobKind::Hotwire { vehicle } => self.do_hotwire(pi, vehicle),
+                JobKind::Repair { vehicle, repair } => self.do_repair(pi, vehicle, repair),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
@@ -1069,7 +1160,7 @@ impl World {
         let site = self.container(c).ok_or_else(|| format!("no container {c}"))?;
         let def = self.container_def(&site).clone();
         let p = &self.players[pi];
-        if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
+        if !(self.within(p, &site, CONTAINER_REACH) || self.keeps_open(p, &site)) {
             return Err(format!("the {} is out of reach", lower(&def.name)));
         }
         let first = !self.opened.contains_key(&c);
@@ -1077,6 +1168,9 @@ impl World {
             let mut contents = if let Some(z) = crate::corpses::corpse_zombie(c) {
                 // A body: what it wears, and what its pockets hold.
                 self.fill_corpse(c, z, &site)
+            } else if crate::vehicles::vehicle_of_container(c).is_some() {
+                // A boot or glovebox: its own table, and the key if it was left there.
+                self.fill_vehicle(c, &site)
             } else {
                 let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
                 crate::loot::fill(self.config.loot_seed(), c, &def, &room_type, &self.config.loot, &self.config.items)
@@ -1087,6 +1181,8 @@ impl World {
             self.load_found(c, &mut contents);
             self.wear_found(c, &mut contents);
             self.opened.insert(c, contents);
+            // Whoever else has it nearby sees what it holds now.
+            self.container_changed(c);
         }
         let p = &self.players[pi];
         let (id, sneaking, at) = (p.id, p.state.stance == Stance::Sneak, site.centre());
@@ -1198,7 +1294,7 @@ impl World {
                 _ => return Err(format!("the {name} is gone")),
             },
             Place::Container(c) => {
-                if !self.container(c).is_some_and(|s| self.keeps_open(p, &s)) {
+                if !self.container(c).is_some_and(|s| self.usable(p, &s)) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
                 let mut list = self.opened.get(&c).cloned().unwrap_or_default();
@@ -1257,7 +1353,7 @@ impl World {
         let items = &self.config.items;
         let name = lower(&def.name);
         let p = &self.players[pi];
-        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, &s));
+        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.usable(p, &s));
         let mut dst_box: Option<(u32, Vec<ItemStack>)> = None;
         let mut to_ground: Vec<ItemStack> = Vec::new();
         // Whatever a slot or a layer had in the way goes into pockets and bags.
@@ -1409,9 +1505,9 @@ impl World {
         }
     }
 
-    /// Players with container `c` open hear about its new contents.
+    /// Players with container `c` open, or within reach of it (#55), hear about its new contents.
     pub(crate) fn container_changed(&mut self, c: u32) {
-        let ids: Vec<u32> = self.players.iter().filter(|p| p.open == Some(c)).map(|p| p.id).collect();
+        let ids: Vec<u32> = self.players.iter().filter(|p| p.open == Some(c) || p.nearby.0.contains(&c)).map(|p| p.id).collect();
         self.private_dirty.extend(ids);
     }
 
@@ -1992,33 +2088,20 @@ mod tests {
             let find = |k: &str| here.iter().find(|s| kind(&w, s) == k).cloned();
             let (Some(counter), Some(fridge), Some(oven)) = (find("kitchen_cupboard"), find("fridge"), find("oven")) else { continue };
             kitchens += 1;
-            // Somewhere a body fits at the counter (within 0.6 m of it), as near as it gets to all three.
-            let (lo, hi) = (counter.min - IVec2::splat(2), counter.min + counter.size + IVec2::splat(2));
-            let mut best: Option<(f32, Vec2)> = None;
-            for y in (lo.y * 10)..(hi.y * 10) {
-                for x in (lo.x * 10)..(hi.x * 10) {
-                    let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
-                    if w.map.room_at(p) != room || w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) > 1e-3 || counter.distance(p) > 0.6 {
-                        continue;
-                    }
-                    let worst = [&counter, &fridge, &oven].iter().map(|s| s.distance(p)).fold(0.0, f32::max);
-                    if best.is_none_or(|(d, _)| worst < d) {
-                        best = Some((worst, p));
-                    }
-                }
-            }
-            let (worst, at) = best.expect("room to stand at the counter");
-            assert!(worst <= CONTAINER_REACH - 0.05, "room {room}: the furthest of counter, fridge and oven is {worst} m from the best spot at the counter");
+            // Where a body fits in front of each (within 0.6 m of it): containers open only from the front.
+            let spots: Vec<Vec2> = [&counter, &fridge, &oven].iter().map(|site| front_spot(&w, site, 0.6).unwrap_or_else(|| panic!("room {room}: nowhere to stand in front of the {}", kind(&w, site)))).collect();
             let pi = w.players.iter().position(|p| p.id == id).unwrap();
-            w.players[pi].state.pos = at;
+            // Facing the counter from in front of it, E opens the counter.
+            let spot = spots[0];
+            w.players[pi].state.pos = spot;
             w.players[pi].jobs.clear();
-            // Facing the counter, E opens the counter.
             let lo = counter.min.as_vec2();
-            let to = at.clamp(lo, lo + counter.size.as_vec2()) - at;
+            let to = spot.clamp(lo, lo + counter.size.as_vec2()) - spot;
             w.players[pi].state.facing = to.y.atan2(to.x);
             assert_eq!(w.container_in_reach(id), Some(counter.id));
-            for site in [&counter, &fridge, &oven] {
+            for (site, &at) in [&counter, &fridge, &oven].into_iter().zip(&spots) {
                 let what = format!("room {room}, the {}", kind(&w, site));
+                w.players[pi].state.pos = at;
                 w.player_search(id, if site.id == counter.id { None } else { Some(site.id) }).unwrap();
                 // A second press while it's under way changes nothing.
                 w.player_search(id, Some(site.id)).unwrap();
@@ -2052,6 +2135,134 @@ mod tests {
         assert!(kitchens >= 2, "both houses have kitchens: {kitchens}");
     }
 
+    /// The spot nearest container `site` (within `within` m of it, on a 0.1 m grid) where a body fits,
+    /// in its room, from which it can be opened (in reach and in front).
+    use crate::containers::front_spot;
+
+    /// Every container on the ground floor of every shipped template can be opened: somewhere a
+    /// body fits in front of it, in reach (#54: containers open only from their front).
+    #[test]
+    fn every_container_opens_from_its_front() {
+        let mut c = content(5);
+        c.templates = crate::template::tests::shipped_templates();
+        let w = World::new(c.with_map_chunks(30));
+        let mut checked = 0;
+        for site in w.containers().iter().filter(|s| s.level == 0 && s.front.is_some()) {
+            let kind = &w.container_def(site).id;
+            assert!(front_spot(&w, site, CONTAINER_REACH - 0.1).is_some(), "the {kind} at {} (facing {:?}) has nowhere to stand in front of it", site.min, site.front);
+            checked += 1;
+        }
+        assert!(checked > 50, "only {checked} containers in the town");
+    }
+
+    /// Standing beside a counter or behind it (in a doorway next to it, #54) doesn't open it; in
+    /// front of it, a little past its end, does.
+    #[test]
+    fn containers_open_only_from_the_front() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("counter", "kitchen").unwrap();
+        // A 2 x 1 counter at x 61..63, y 60..61, its doors facing south.
+        w.sites.push(ContainerSite { id: 4, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::new(2, 1), body: None, front: Some(crate::map::Side::S) });
+        let at = |w: &mut World, x: f32, y: f32, facing: f32| {
+            w.players[0].state.pos = Vec2::new(x, y);
+            w.players[0].state.facing = facing;
+            w.players[0].jobs.clear();
+        };
+        // Beside its west end, facing it: not from the side.
+        at(&mut w, 60.6, 60.5, 0.0);
+        assert_eq!(w.container_in_reach(id), None);
+        // (Named, from the inventory screen's Nearby, it is searched from any side: #55.)
+        assert!(w.player_search(id, Some(4)).is_ok());
+        // Behind it (north), facing it.
+        at(&mut w, 62.0, 59.6, std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), None);
+        // In front, facing north.
+        at(&mut w, 62.0, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), Some(4));
+        // In front and a little past its east end (within front_slack_m): still.
+        at(&mut w, 63.2, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), Some(4));
+        // Well past its end: no.
+        at(&mut w, 63.6, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), None);
+        // Opened from the front, it stays open stepping round to its side.
+        at(&mut w, 62.0, 61.4, -std::f32::consts::FRAC_PI_2);
+        w.player_search(id, None).unwrap();
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).open, Some(4));
+        w.players[0].state.pos = Vec2::new(60.6, 60.5);
+        w.step();
+        assert_eq!(me(&w, id).open, Some(4));
+    }
+
+    /// A container beside you (not in front) isn't E's, but named (the inventory screen's Nearby,
+    /// #55) it is searched from where you stand, and it is in the list of those within reach.
+    #[test]
+    fn a_container_beside_you_is_searched_by_name_not_by_e() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("counter", "kitchen").unwrap();
+        // A 2 x 1 counter at x 61..63, its doors facing south; the player at its west end.
+        w.sites.push(ContainerSite { id: 4, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::new(2, 1), body: None, front: Some(crate::map::Side::S) });
+        w.players[0].state.pos = Vec2::new(60.6, 60.5);
+        w.players[0].state.facing = 0.0;
+        assert_eq!(w.container_in_reach(id), None, "E keeps to the front");
+        assert_eq!(w.containers_near(id), vec![4]);
+        w.player_search(id, Some(4)).unwrap();
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).open, Some(4));
+        assert!(w.container_contents(4).is_some(), "filled on that first search");
+        // Out of reach, named or not, no.
+        w.players[0].state.pos = Vec2::new(58.0, 60.5);
+        w.players[0].open = None;
+        assert!(w.containers_near(id).is_empty());
+        assert!(w.player_search(id, Some(4)).is_err());
+    }
+
+    /// A container searched already is taken from and put into within reach without opening it
+    /// again, while another is the open one (#55); out of reach, not.
+    #[test]
+    fn a_searched_container_in_reach_is_used_without_opening_it() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
+        // Two fridges by the player at (60.5, 60.5): #7 east, #8 south, each 0.5 m away.
+        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None, front: None });
+        w.sites.push(ContainerSite { id: 8, def, level: 0, building: 0, room: 0, min: IVec2::new(60, 61), size: IVec2::ONE, body: None, front: None });
+        w.player_search(id, Some(7)).unwrap();
+        w.player_search(id, Some(8)).unwrap();
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).open, Some(8));
+        // Into #7, which isn't the open one, and back out.
+        let had = w.container_contents(7).unwrap().len();
+        w.give_item(id, "apple", 1);
+        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "apple").unwrap() as u32;
+        w.player_move_item(id, Place::Carried, k, Place::Container(7), 0).unwrap();
+        settle_clean(&mut w, id, "putting an apple in the fridge that isn't open");
+        assert_eq!(w.container_contents(7).unwrap().len(), had + 1);
+        let k = w.container_contents(7).unwrap().iter().position(|s| w.item_def(s.item).id == "apple").unwrap() as u32;
+        w.player_move_item(id, Place::Container(7), k, Place::Carried, 0).unwrap();
+        settle_clean(&mut w, id, "taking it back");
+        assert_eq!(w.container_contents(7).unwrap().len(), had);
+        assert_eq!(me(&w, id).open, Some(8), "the open one stays open");
+        // Both are in the list of those within reach, nearest first (a tie goes to the lower id).
+        for _ in 0..NEARBY_EVERY {
+            w.step();
+        }
+        assert_eq!(me(&w, id).nearby.0, vec![7, 8]);
+        // Stepped away from #7 (still by #8): its things are out of reach.
+        w.players[0].state.pos = Vec2::new(59.2, 61.5);
+        assert!(!w.containers_near(id).contains(&7));
+        w.give_item(id, "apple", 1);
+        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "apple").unwrap() as u32;
+        assert!(w.player_move_item(id, Place::Carried, k, Place::Container(7), 0).is_ok(), "queued: checked when it happens");
+        settle(&mut w, id);
+        assert!(last_note(&w, id).contains("out of reach"), "{}", last_note(&w, id));
+        // An unsearched one within reach is listed, but nothing is taken from it unopened.
+        w.sites.push(ContainerSite { id: 9, def, level: 0, building: 0, room: 0, min: IVec2::new(58, 61), size: IVec2::ONE, body: None, front: None });
+        assert!(w.containers_near(id).contains(&9));
+        assert!(w.player_move_item(id, Place::Container(9), 0, Place::Carried, 0).is_err());
+        assert!(w.container_contents(9).is_none(), "not filled by looking");
+    }
+
     /// Reach is to the nearest edge of the furniture (1.6 m), and an open container stays open
     /// until 2.2 m or another room.
     #[test]
@@ -2059,7 +2270,7 @@ mod tests {
         let (mut w, id) = field();
         let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
         // A 2 x 1 fridge east of the player, its west edge at x = 62.
-        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
+        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None, front: None });
         let at = |w: &mut World, x: f32| {
             w.players[0].state.pos = Vec2::new(x, 60.5);
             w.players[0].jobs.clear();
@@ -2100,9 +2311,9 @@ mod tests {
         let def = w.config.containers.lookup("counter", "kitchen").unwrap();
         // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
         // (0.5 m), one further east behind it (1.5 m, in reach).
-        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
+        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None, front: None });
+        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None, front: None });
+        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None, front: None });
         w.players[0].state.facing = 0.0; // east
         assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
         w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)

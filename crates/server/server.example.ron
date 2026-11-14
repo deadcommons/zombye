@@ -45,6 +45,10 @@
     budget_kb: 32,
     // Take the dev toggles (god mode and the like) and debug intents from clients. For testing.
     allow_dev: false,
+    // Stop the server (saving the world) once nobody has been on it for this many seconds, 5 to
+    // 86400; before anyone has joined it waits at least two minutes. It is how a game hosted from
+    // the game's own menu ends when its players have left. Left out: it runs until it is stopped.
+    // stop_when_empty_secs: 60,
 
     // The world. `save` is loaded if it exists, else a new world is made from the three settings
     // under it and saved there; then it is autosaved, and saved when the server stops (Ctrl-C,
@@ -58,6 +62,14 @@
     map_chunks: 30,
     // How many zombies. Left out: what the game data's population.ron gives for the map.
     // zombies: 3000,
+    // How hard it is: a preset's id from the game data's difficulty.ron (easy_street, survivor,
+    // hard_times, last_one_left). Left out: survivor, the game as it ships.
+    // difficulty: "hard_times",
+    // The Sandbox: a setup file the game's Sandbox page saved (saves/sandbox/NAME.ron)...
+    // sandbox: "my_sandbox.ron",
+    // ...and any tuning number by its path, over the preset and the file. The game's Sandbox page
+    // lists every path; sandbox.ron in the game data names the usual ones.
+    // set: {"zombie.memory_secs": "30", "population.respawn.enabled": "true"},
 
     // Load a save whose game data changed in a way it can't simply take, dropping what no longer
     // fits. Left off, such a save is refused and the server doesn't start.

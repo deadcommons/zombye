@@ -99,6 +99,8 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
         JobKind::Blind { fit: false, .. } => "Taking a blind down".to_string(),
         JobKind::Build { add: true, build, .. } => join.builds.get(build as usize).map_or("Building".to_string(), |b| b.name.clone()),
         JobKind::Build { add: false, .. } => "Prising a plank off".to_string(),
+        JobKind::Hotwire { .. } => "Hotwiring".to_string(),
+        JobKind::Repair { repair, .. } => join.vehicles.work.repairs.get(repair as usize).map_or("Repairing".to_string(), |r| r.name.clone()),
     }
 }
 
@@ -145,7 +147,16 @@ fn update(
     let frac = if track.total > 0.0 { (1.0 - busy / track.total).clamp(0.0, 1.0) } else { 1.0 };
     let more = if queued > 1 { format!("  (+{} queued)", queued - 1) } else { String::new() };
     title.0 = format!("{}  {busy:.1} s{more}", describe(kind, &join));
-    hint.0 = if queued > 1 { "X or click: cancel  |  Shift+X: all".into() } else { "X or click: cancel".into() };
+    hint.0 = if crate::pad::showing() {
+        match crate::pad::prompt_action(crate::keys::Action::Stop) {
+            Some(b) => format!("{b}: cancel"),
+            None => String::new(),
+        }
+    } else if queued > 1 {
+        "X or click: cancel  |  Shift+X: all".into()
+    } else {
+        "X or click: cancel".into()
+    };
     fill.width = percent(frac * 100.0);
     *vis = Visibility::Inherited;
 }

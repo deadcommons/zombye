@@ -11,6 +11,12 @@
 // When: Death once when you die; Danger (looped) while zombies are on you (one attacking within
 // 6 m, or three coming within 12 m, and 8 s after); Dawn once as the night turns to day; else
 // Night or Day by the daylight. The town is meant to feel empty: most of the time nothing plays.
+//
+// radio: the car radio (cars stage 5). At the wheel R tunes from off through each station in this
+// order and off again, with `static_secs` of static between; a station plays its files one after
+// another, picked at random, and the moods keep quiet while it plays. Stations: (name: "...",
+// files: ["music/....ogg", ...]); volume 0..2 under the music's. None here: the dial finds only
+// static until a release audio folder's music.ron gives it stations.
 (
     volume: 0.7,
     moods: {
@@ -20,4 +26,5 @@
         Dawn: (files: [], volume: 0.8, fade_in: 4.0, fade_out: 4.0),
         Death: (files: [], volume: 1.0, fade_in: 0.2, fade_out: 3.0),
     },
+    radio: (stations: [], volume: 0.8, static_secs: 0.8),
 )

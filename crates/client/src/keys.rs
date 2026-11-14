@@ -7,6 +7,9 @@
 //! global (like `help_text`), set once at start ([`init`]) and again when the player rebinds
 //! ([`set_overrides`]).
 //!
+//! The controller's buttons answer here too (`pad.rs`): an action a pad button started, holds or
+//! let go of is just pressed, pressed or just released whatever the keys say.
+//!
 //! **Adding an action:** a variant, its id and name in [`Action::ALL`] and [`Action::id`] /
 //! [`Action::name`], and its keys in `keys.ron`.
 
@@ -32,6 +35,7 @@ pub enum Action {
     Flashlight,
     Refuel,
     Horn,
+    Radio,
     Shove,
     Reload,
     Stop,
@@ -45,7 +49,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 23] = [
+    pub const ALL: [Action; 24] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -59,6 +63,7 @@ impl Action {
         Action::Flashlight,
         Action::Refuel,
         Action::Horn,
+        Action::Radio,
         Action::Shove,
         Action::Reload,
         Action::Stop,
@@ -87,6 +92,7 @@ impl Action {
             Action::Flashlight => "flashlight",
             Action::Refuel => "refuel",
             Action::Horn => "horn",
+            Action::Radio => "radio",
             Action::Shove => "shove",
             Action::Reload => "reload",
             Action::Stop => "stop",
@@ -109,7 +115,7 @@ impl Action {
     /// Read only at the wheel of a car (the horn), so it may share a key with one read only on
     /// foot (H: the Health screen on foot, the horn at the wheel).
     pub fn at_wheel(self) -> bool {
-        matches!(self, Action::Horn)
+        matches!(self, Action::Horn | Action::Radio)
     }
 
     /// Does something only beside a car (pouring fuel), and gives way to the action it shares a
@@ -151,6 +157,8 @@ pub struct KeysFile {
     pub refuel: Option<Vec<String>>,
     /// At the wheel: the horn.
     pub horn: Option<Vec<String>>,
+    /// At the wheel: the car radio, from off through each station and off again.
+    pub radio: Option<Vec<String>>,
     /// Shove, or stomp one that's down; the brake at the wheel.
     pub shove: Option<Vec<String>>,
     /// Reload the gun in your hand.
@@ -190,6 +198,7 @@ impl KeysFile {
             (Action::Flashlight, self.flashlight),
             (Action::Refuel, self.refuel),
             (Action::Horn, self.horn),
+            (Action::Radio, self.radio),
             (Action::Shove, self.shove),
             (Action::Reload, self.reload),
             (Action::Stop, self.stop),
@@ -432,16 +441,17 @@ pub fn current() -> Bindings {
     with(Clone::clone)
 }
 
+/// Was the action started this frame, by its keys or by the controller's button (`pad.rs`)?
 pub fn just_pressed(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.just_pressed(input, a))
+    with(|b| b.just_pressed(input, a)) || crate::pad::just(a)
 }
 
 pub fn pressed(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.pressed(input, a))
+    with(|b| b.pressed(input, a)) || crate::pad::held(a)
 }
 
 pub fn just_released(input: &ButtonInput<KeyCode>, a: Action) -> bool {
-    with(|b| b.just_released(input, a))
+    with(|b| b.just_released(input, a)) || crate::pad::released(a)
 }
 
 pub fn label(a: Action) -> String {
