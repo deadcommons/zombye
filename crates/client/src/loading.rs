@@ -164,6 +164,16 @@ pub fn may_load(loading: Option<Res<Loading>>) -> bool {
     loading.is_none_or(|l| l.hold || l.frames >= LOAD_AFTER_FRAMES)
 }
 
+/// [`may_load`], once: true on the first frame the loading may start and never again, for a
+/// load that used to be a `Startup` system. Each system it guards keeps its own `Local`.
+pub fn load_once(loading: Option<Res<Loading>>, mut done: Local<bool>) -> bool {
+    if *done || !may_load(loading) {
+        return false;
+    }
+    *done = true;
+    true
+}
+
 /// The loading screen's state. `up` while it covers the game (fading included).
 #[derive(Resource)]
 pub struct Loading {

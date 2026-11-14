@@ -260,7 +260,7 @@ pub struct MusicPlugin;
 impl Plugin for MusicPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(State { mood: Mood::Day, next_at: 0.0, danger_until: f32::NEG_INFINITY, last_day: None, dawn_due: false, once_playing: None, death_played: false, last_pick: None, dice: 0x9E37_79B9_7F4A_7C15 })
-            .add_systems(Update, load_music.run_if(crate::loading::may_load.and(run_once)))
+            .add_systems(Update, load_music.run_if(crate::loading::load_once))
             .init_resource::<Radio>()
             .add_message::<RadioTuned>()
             .add_systems(PostUpdate, (choose, tune, play, play_radio).chain().run_if(resource_exists::<Music>).run_if(resource_exists::<LocalPlayer>));

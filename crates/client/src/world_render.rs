@@ -245,7 +245,7 @@ pub struct WorldRenderPlugin;
 impl Plugin for WorldRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Streamer>()
-            .add_systems(Update, setup_shared.run_if(crate::loading::may_load.and(run_once)).before(stream))
+            .add_systems(Update, setup_shared.run_if(crate::loading::load_once).before(stream))
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
             .add_systems(Update, swap_detail.after(stream))
             .add_systems(Update, (rebuild_felled, stream, apply_edge_changes, sync_blinds, sync_barricades, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds, fade_planks).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
