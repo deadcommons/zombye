@@ -325,8 +325,8 @@ fn draw_vehicles(
     mut made: ResMut<CarMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnCars>,
-    mut glass: ResMut<GlassMaterial>,
-    mut standard: ResMut<Assets<StandardMaterial>>,
+    // One parameter for both: a system takes at most 16.
+    (mut glass, mut standard): (ResMut<GlassMaterial>, ResMut<Assets<StandardMaterial>>),
     mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility, &mut Sway, &mut CarMotion)>,
 ) {
     let views = &link.curr.vehicles;
