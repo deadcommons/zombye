@@ -2232,7 +2232,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
             let pos = p.state.pos;
             let radius = num("radius").unwrap_or(8.0).clamp(1.0, 60.0) as f32;
-            let reach = world.containers_in_reach(id);
+            let reach = world.containers_near(id); // searchable by id from any side (#55)
             let mut near: Vec<_> = world.containers().iter().filter(|s| s.distance(pos) <= radius).collect();
             near.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)));
             // Dead zombies' bodies are containers too (`zombye_sim::corpses`).
@@ -4387,7 +4387,7 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
         "floor within reach: {}\n",
         if floor.is_empty() { "-".to_string() } else { floor.iter().map(|it| format!("#{} {}", it.id, stack_text(world, &it.stack))).collect::<Vec<_>>().join(", ") }
     ));
-    let reach = world.containers_in_reach(id);
+    let reach = world.containers_near(id); // searchable by id from any side (#55)
     out.push_str(&format!(
         "containers within reach: {}",
         if reach.is_empty() {

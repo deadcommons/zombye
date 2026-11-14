@@ -33,6 +33,9 @@ pub struct HostArgs {
     /// Send the server's panics and slow ticks to the developers when there is a report address
     /// (`zombye_net::report::endpoint`); `--no-reports` says no.
     pub reports: bool,
+    /// `--stop-when-empty SECS`: stop, saving, once nobody has been on for this long (a game
+    /// hosted from the game's menu: `crates/client/src/hosting.rs`). `None`: run until stopped.
+    pub stop_when_empty: Option<Duration>,
 }
 
 impl HostArgs {
@@ -99,7 +102,11 @@ impl HostArgs {
             packs: Vec::new(),
         };
         let start_kit = text("--start-kit").map(|v| parse_kit(&v)).transpose()?;
-        Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)?, reports: !flag("--no-reports") })
+        let stop_when_empty = match text("--stop-when-empty") {
+            None => None,
+            Some(v) => Some(Duration::from_secs_f32(v.parse::<f32>().ok().filter(|s| (5.0..=86_400.0).contains(s)).ok_or(format!("--stop-when-empty is seconds, 5 to 86400, not {v}"))?)),
+        };
+        Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)?, reports: !flag("--no-reports"), stop_when_empty })
     }
 
     /// What new survivors start with: `--start-kit` if given, else the data folder's
@@ -233,6 +240,12 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
     }
     let mut report = Report::new(&host);
     report.problems = problem_reports(args.reports, persist, &host);
+    if let Some(wait) = args.stop_when_empty {
+        println!("stopping once nobody has been on for {:.0} s (--stop-when-empty)", wait.as_secs_f32());
+    }
+    // When somebody was last on; until the first join, a start that leaves time to get here.
+    let mut last_on = Instant::now() + args.stop_when_empty.map_or(Duration::ZERO, |wait| FIRST_JOIN_WAIT.saturating_sub(wait));
+    let mut left_empty = false;
     host.run(|h| {
         // What the host logged, deaths, and the admin calls waiting, between two ticks.
         persist.dirty |= admin.tick(h, persist);
@@ -245,14 +258,26 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
             }
         }
         report.tick(h, &mut admin.log);
-        !shutdown::requested()
+        if !h.clients().is_empty() {
+            last_on = Instant::now();
+        } else if args.stop_when_empty.is_some_and(|wait| Instant::now().saturating_duration_since(last_on) >= wait) {
+            left_empty = true;
+        }
+        !shutdown::requested() && !left_empty
     });
+    if left_empty {
+        println!("nobody has been on for {:.0} s: stopping", args.stop_when_empty.unwrap_or_default().as_secs_f32());
+    }
     host.close("the server is shutting down");
     if let Some(save) = persist.path.clone() {
         persist.save_now(&host.world, "shutting down");
         write_names(&save, &host);
     }
 }
+
+/// With `--stop-when-empty`, how long a server waits for its first player before it counts as
+/// left empty (the game that started it is still building its map).
+const FIRST_JOIN_WAIT: Duration = Duration::from_secs(120);
 
 /// A status line every ten seconds while anyone is on.
 struct Report {

@@ -15,7 +15,7 @@
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::map::TileMap;
+use crate::map::{Side, TileMap};
 
 /// The room type that matches any room in `containers.ron`'s furniture map.
 pub const ANY_ROOM: &str = "any";
@@ -32,6 +32,10 @@ pub struct ContainerDef {
     pub search_secs: f32,
     /// Radius of the noise opening it makes (halved when sneaking).
     pub noise_m: f32,
+    /// Opened from any side, not only from in front of the furniture (its `facing`). Off by
+    /// default: a cupboard, fridge or wardrobe is opened standing in front of its doors.
+    #[serde(default)]
+    pub any_side: bool,
 }
 
 /// One line of the furniture map: furniture `furniture` in a room of type `room` (or `any`) is a
@@ -45,11 +49,28 @@ pub struct FurnitureContainer {
 }
 
 /// The whole of `containers.ron`. Empty by default: no furniture holds anything.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerData {
     pub containers: Vec<ContainerDef>,
     pub furniture: Vec<FurnitureContainer>,
+    /// How far past either end of a piece of furniture's front (metres) a body may stand and still
+    /// be in front of it ([`ContainerSite::in_front`]).
+    #[serde(default = "default_front_slack")]
+    pub front_slack_m: f32,
+}
+
+impl Default for ContainerData {
+    fn default() -> Self {
+        ContainerData { containers: Vec::new(), furniture: Vec::new(), front_slack_m: default_front_slack() }
+    }
+}
+
+/// [`ContainerData::front_slack_m`] when the file doesn't say.
+pub const FRONT_SLACK_M: f32 = 0.3;
+
+fn default_front_slack() -> f32 {
+    FRONT_SLACK_M
 }
 
 fn valid_id(id: &str) -> bool {
@@ -58,6 +79,9 @@ fn valid_id(id: &str) -> bool {
 
 impl ContainerData {
     pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=2.0).contains(&self.front_slack_m) {
+            return Err(format!("front_slack_m must be in 0..2, got {}", self.front_slack_m));
+        }
         for (i, c) in self.containers.iter().enumerate() {
             let id = &c.id;
             if !valid_id(id) {
@@ -126,6 +150,9 @@ pub struct ContainerSite {
     /// A dead zombie's body (`crate::corpses`): where it lies. Its reach is measured from round that
     /// point, not from the tile `min`.
     pub body: Option<Vec2>,
+    /// The side it opens from (the furniture's `facing`), `None` for one that opens from any side
+    /// (`ContainerDef::any_side`, and bodies). See `in_front`.
+    pub front: Option<Side>,
 }
 
 impl ContainerSite {
@@ -141,6 +168,23 @@ impl ContainerSite {
         }
     }
 
+    /// Is `p` in front of it: on its front's side of the footprint (not beside or behind it) and
+    /// no more than `slack` metres past either end of the front? Always, for one with no front.
+    /// The one rule for opening a piece of furniture: the server's reach and the client's E.
+    pub fn in_front(&self, p: Vec2, slack: f32) -> bool {
+        let Some(side) = self.front else { return true };
+        let lo = self.min.as_vec2();
+        let hi = lo + self.size.as_vec2();
+        // How far out of the front `p` is, and whether it is along the front, give or take `slack`.
+        let (out, along) = match side {
+            Side::N => (lo.y - p.y, (lo.x - slack..=hi.x + slack).contains(&p.x)),
+            Side::S => (p.y - hi.y, (lo.x - slack..=hi.x + slack).contains(&p.x)),
+            Side::W => (lo.x - p.x, (lo.y - slack..=hi.y + slack).contains(&p.y)),
+            Side::E => (p.x - hi.x, (lo.y - slack..=hi.y + slack).contains(&p.y)),
+        };
+        out >= -FRONT_EPS && along
+    }
+
     /// Distance from `p` to the edge of the footprint (0 inside it; a body: to
     /// `crate::corpses::BODY_RADIUS` round where it lies).
     pub fn distance(&self, p: Vec2) -> f32 {
@@ -152,6 +196,10 @@ impl ContainerSite {
         p.clamp(lo, hi).distance(p)
     }
 }
+
+/// How far behind the front plane a body still counts as in front (bodies can't stand inside
+/// furniture, so this only forgives rounding).
+const FRONT_EPS: f32 = 0.05;
 
 /// Every container in the map, in id order: furniture on the ground floor and the first upper
 /// floor whose (kind, room type) maps to a container.
@@ -169,7 +217,8 @@ pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
             let room = if level == 0 { map.tile(f.min).room } else { map.upper_tile(f.min).map_or(0, |u| u.room) };
             let room_type = map.rooms.get(room as usize).map_or("", |r| r.room_type.as_str());
             if let Some(def) = data.lookup(&f.kind, room_type) {
-                out.push(ContainerSite { id: this, def, level, building: bi as u16, room, min: f.min, size: f.size, body: None });
+                let front = (!data.containers[def as usize].any_side).then_some(f.facing);
+                out.push(ContainerSite { id: this, def, level, building: bi as u16, room, min: f.min, size: f.size, body: None, front });
             }
         }
     }
@@ -212,4 +261,36 @@ mod tests {
         assert!(d.validate().unwrap_err().contains("mapped twice"));
         assert!(parse_containers("(containers: [], furniture: [], extra: 1)").is_err());
     }
+}
+
+/// For tests: the nearest point in front of `site` (`ContainerSite::in_front`), within `within` of
+/// it, on its floor and in its room, where a body fits.
+#[cfg(test)]
+pub(crate) fn front_spot(w: &crate::World, site: &ContainerSite, within: f32) -> Option<Vec2> {
+    let (lo, hi) = (site.min - IVec2::splat(2), site.min + site.size + IVec2::splat(2));
+    let slack = w.config.containers.front_slack_m;
+    let mut best: Option<(f32, Vec2)> = None;
+    for y in (lo.y * 10)..(hi.y * 10) {
+        for x in (lo.x * 10)..(hi.x * 10) {
+            let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
+            let d = site.distance(p);
+            if d > within || !site.in_front(p, slack) {
+                continue;
+            }
+            let fits = match site.level {
+                0 => w.map.room_at(p) == site.room && w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) <= 1e-3,
+                _ => {
+                    let r = crate::players::PLAYER_RADIUS;
+                    [Vec2::ZERO, Vec2::new(r, 0.0), Vec2::new(-r, 0.0), Vec2::new(0.0, r), Vec2::new(0.0, -r)].iter().all(|o| {
+                        let t = (p + *o).floor().as_ivec2();
+                        w.map.upper_tile(t).is_some_and(|u| u.floor && !u.blocked && u.room == site.room)
+                    })
+                }
+            };
+            if fits && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }

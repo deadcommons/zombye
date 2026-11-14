@@ -1,0 +1,65 @@
+// How items sit in a survivor's hand (read by the client: crates/client/src/held.rs).
+//
+// Anything held is drawn in the hand's grip frame, which is fixed on the hand (the thing follows
+// the hand, and the hand closes round it): the grip at the origin, on the palm (4 cm out of the
+// hand's middle, where the closed fingers go round it); the item pointing along +Z, out past the
+// thumb; its top +Y, toward the wrist; so +X is out of the right palm, and for the left hand out
+// of its back. Four ways of holding (`survivor_model::Hold`):
+//   - a handle (a weapon that isn't a gun, anything with a held model), in a hammer grip: at rest
+//     +Z runs across the palm, 45 degrees off the knuckles' line toward the fingers, so it points
+//     forward and down from a hanging hand; along the knuckles while a guard or a blow has the arm;
+//   - a tool (`hold: Tool` here: a hammer, a hatchet, a frying pan, a crowbar), a handle held to strike with
+//     its head: at rest +Z leans 20 degrees the other way, back toward the wrist, so the head is up
+//     out of the fist, not down by the knee; along the knuckles in a guard or a blow like any handle;
+//   - a gun: its barrel (+Z) on the way the fingers point, its top (+Y) to the thumb;
+//   - a small thing in the fist (everything else): +Z along the knuckles' line. A thing that stands
+//     (a mug, a tin, a bottle) is put upright in the fist, its top to +Z; a flat one along +Z, flat
+//     on the palm; either with its middle on the grip, as far out of the palm as it is thick.
+// A held model is made that way. A grip here then moves the item in that frame (`offset`, metres),
+// turns it (`turn`, degrees about X, then Y, then Z) and scales it (`scale`), so an item that sits
+// wrong is put right without code. Every field is optional.
+//
+// `hold` says which of those ways (`Handle`, `Tool`, `Gun`, `Fist`) a weapon or a thing with a held
+// model is held: left out, a gun as a gun and anything else as a handle.
+//
+// `carry` is how the thing is carried while nothing else has the arm (standing, walking, running,
+// sneaking; `held::Carry`, `SurvivorModel::carry`):
+//   - Side: the arm hangs and swings as the body's clips have it (the default for a weapon);
+//   - Front: the elbow bent, the forearm forward at the waist, the thing upright in the fist in
+//     front of the body (the default for everything else: a mug, a tin, a bottle);
+//   - Low: low and ready at the side, the forearm forward and down 30 degrees, clear of the thigh
+//     (a pistol; and a tool, which stands near upright in that fist, its head up).
+// A guard, a blow, eating, drinking, a reload, a gesture and so on take the arm from the carry.
+//
+// A release build's models have grips of their own (release-models/held/grips.ron), read over
+// these, since a grip belongs to the model it fits.
+//
+//   "kitchen_knife": (offset: (0.0, 0.0, -0.02), turn: (0.0, 0.0, 90.0), scale: 1.0),
+//
+// Two entries are not items: "eating" and "drinking" are put on top of the grip of the food or
+// drink in use, in the left hand's frame (+X out of the back of that hand), while the clip has the
+// fist at the face: they bring the thing to the lips.
+{
+    // Tools are held to strike with the head, not like a knife (#65): the head up out of the fist,
+    // carried low and ready in front of the hip. The long clubs (a bat, a golf club, a plank) and
+    // the two-handed fire axe go on trailing forward and down from a hanging arm, as a handle does.
+    // The hammer's model has its striking face to +Y (the wrist): half a turn about its handle puts
+    // the face the way he faces and the claw back; and 3 cm up, the fist nearer the handle's end.
+    "claw_hammer": (hold: Tool, carry: Low, offset: (0.0, 0.0, 0.03), turn: (0.0, 0.0, 180.0)),
+    "hatchet": (hold: Tool, carry: Low),
+    "frying_pan": (hold: Tool, carry: Low),
+    "crowbar": (hold: Tool, carry: Low),
+    // A pistol at rest is held low and ready, its barrel forward and down, not down the leg.
+    "pistol": (carry: Low),
+    // A flashlight too, and turned 60 degrees in the fist, toward the fingers, to shine ahead.
+    "flashlight": (carry: Low, turn: (60.0, 0.0, 0.0)),
+    // Too big to hold up in one fist.
+    "log": (carry: Side),
+    "petrol_can": (carry: Side),
+    // The eating clip holds the fist in front of the mouth, thumb up, palm to the face: the food in
+    // the fingers (not out past the knuckles), a little out of the palm and down, tipped to the mouth.
+    "eating": (offset: (0.02, 0.0, -0.05), turn: (0.0, -20.0, 0.0)),
+    // The drinking clip holds the fist in front of the brow, thumb to the face: the bottle tipped up
+    // through the fist, its neck down at the lips, its base up and out in front.
+    "drinking": (offset: (-0.01, 0.0, 0.01), turn: (-27.0, -20.0, 0.0)),
+}

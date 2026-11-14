@@ -12,7 +12,14 @@
 // "corpse" is a dead zombie's body (zombye_sim::corpses): searched where it lies, it holds what
 // the zombie wore (population.ron's outfits) and what its pockets hold (loot.ron's corpse table).
 // Its room only matters for what's in its pockets; nothing can be put on a body.
+//
+// Furniture is opened only from its front (the side its doors face: the template's `facing`),
+// standing in front of it, never from beside or behind it, so a cupboard beside a doorway doesn't
+// take E from the door. `front_slack_m` is how far past either end of the front a body may still
+// stand (metres; default 0.3). A container kind with `any_side: true` opens from any side (a
+// coffee table's drawer). Bodies and a car's boot and glovebox have their own reach rules.
 (
+    front_slack_m: 0.3,
     containers: [
         (id: "corpse", name: "Body", room_l: 40.0, search_secs: 2.5, noise_m: 2.0),
         // A car's boot and glovebox (vehicles.ron's `work`): reached from behind the car and from
@@ -27,7 +34,7 @@
         (id: "wardrobe", name: "Wardrobe", room_l: 80.0, search_secs: 2.0, noise_m: 4.0),
         (id: "coat_cupboard", name: "Coat cupboard", room_l: 60.0, search_secs: 1.5, noise_m: 4.0),
         (id: "desk_drawers", name: "Desk drawers", room_l: 20.0, search_secs: 1.2, noise_m: 4.0),
-        (id: "drawer", name: "Drawer", room_l: 8.0, search_secs: 0.8, noise_m: 4.0),
+        (id: "drawer", name: "Drawer", room_l: 8.0, search_secs: 0.8, noise_m: 4.0, any_side: true),
         (id: "drum", name: "Drum", room_l: 15.0, search_secs: 0.8, noise_m: 3.0),
         (id: "tv_shelf", name: "TV stand shelf", room_l: 10.0, search_secs: 0.8, noise_m: 3.0),
         (id: "shelves", name: "Shelves", room_l: 30.0, search_secs: 1.0, noise_m: 3.0),

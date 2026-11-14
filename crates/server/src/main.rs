@@ -33,7 +33,9 @@
 //!   default on with PvP, off in co-op), `--logout-secs S` (default 30: how long a
 //!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
 //!   5: the same when it was left somewhere safe), `--spawn-protection S` (default 10: seconds a
-//!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
+//!   new survivor can't be hurt by other players; #68), `--stop-when-empty S` (stop, saving, once
+//!   nobody has been on for S seconds, and at least two minutes after starting: how a game hosted
+//!   from the game's menu ends). New survivors start with the data folder's
 //!   `start_kit.ron`, or with `--start-kit ITEM[:N],ITEM[:N]...` (`none`: nothing). `--camera
 //!   isometric|first-person` and `--agents off|on|marked` are the camera and agents rules (#69:
 //!   told to every client that joins, and to anyone who asks with `zombye --server-info HOST`;
@@ -73,6 +75,11 @@
 //! binary: `content::installed_data_dir`), `--biomes FILE` (a biomes file to read in place of the
 //! data folder's `biomes.ron`) and `--biome ID` (that one biome over all the wild ground, for trying
 //! its settings; see docs/biomes.md).
+//!
+//! A new world's difficulty (#38): `--difficulty ID` (a preset of the data folder's `difficulty.ron`),
+//! `--sandbox FILE` (a setup saved by the game's Sandbox page, or a `new_game.ron`) and `--set
+//! PATH=VALUE`, as often as wanted, any tuning number by its path (`--set zombie.memory_secs=30`,
+//! `sim::tune`) over them. A loaded save keeps the difficulty it was made with.
 //!
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
 //! makes a new world and saves it there; the server then autosaves to it every
@@ -143,9 +150,14 @@ impl Persist {
 
 /// `--save PATH`: load the save there (anyway, with `--load-anyway`), or make a new world from
 /// `config`, `prepare` it (players) and save it there.
-fn load_or_create(path: &Path, config: WorldConfig, options: LoadOptions, prepare: impl FnOnce(&mut World)) -> World {
+/// The world in the save at `path`, loaded against the content as shipped (`plain`), or a new one
+/// made from `config` (which has the difficulty on) and saved there.
+fn load_or_create(path: &Path, plain: &WorldConfig, config: WorldConfig, options: LoadOptions, prepare: impl FnOnce(&mut World)) -> World {
     if path.exists() {
-        match save_file::load(path, &config, options) {
+        if config.sandbox != plain.sandbox {
+            eprintln!("note: the save keeps the difficulty it was made with; --difficulty, --sandbox and --set are for a new world");
+        }
+        match save_file::load(path, plain, options) {
             Ok((loaded, ms)) => {
                 for note in &loaded.notes {
                     eprintln!("note: {note}");
@@ -262,13 +274,37 @@ fn main() {
     if let Some(chunks) = value("--map-chunks") {
         config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
     }
+    // How hard a new world is (#38): `--difficulty ID` (a preset of difficulty.ron), `--sandbox FILE`
+    // (a setup the game's Sandbox page saved) and `--set PATH=VALUE` (any tuning number, as often as
+    // wanted) over them. `plain` is the content as shipped: what a save is loaded against, since a
+    // saved world keeps the difficulty it was made with.
+    let plain = config.clone();
+    let setup = match world_setup(&args) {
+        Ok(setup) => setup,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(setup) = &setup {
+        if text("--benchmark").is_some() {
+            eprintln!("--benchmark plays its scenarios as they are: it can't be used with --difficulty, --sandbox or --set");
+            std::process::exit(2);
+        }
+        let applied = content::load_difficulty(&data).and_then(|d| d.apply(setup, &mut config));
+        if let Err(e) = applied {
+            eprintln!("difficulty: {e}");
+            std::process::exit(2);
+        }
+        eprintln!("difficulty for a new world: {}", config.sandbox.describe());
+    }
 
     let save_path = text("--save").map(PathBuf::from);
     let load_options = LoadOptions { force: flag("--load-anyway") };
     let mut persist = Persist {
         dir: text("--saves").map(PathBuf::from).or_else(|| save_path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from(save_file::DEFAULT_DIR)),
         path: save_path,
-        content: config.clone(),
+        content: plain.clone(),
         autosave: Some(text("--autosave-mins").and_then(|v| v.parse::<f64>().ok()).unwrap_or(5.0))
             .filter(|m| *m > 0.0 && m.is_finite())
             .map(|m| Duration::from_secs_f64(m * 60.0)),
@@ -337,7 +373,7 @@ fn main() {
         };
         shutdown::install();
         let world = match &persist.path {
-            Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
+            Some(path) => load_or_create(path, &plain, config, load_options, mcp::add_agent_player),
             None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
@@ -346,7 +382,7 @@ fn main() {
     } else if flag("--mcp") {
         shutdown::install();
         let world = match &persist.path {
-            Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
+            Some(path) => load_or_create(path, &plain, config, load_options, mcp::add_agent_player),
             None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
@@ -393,7 +429,7 @@ fn main() {
         };
         let new_world = !persist.path.as_ref().is_some_and(|p| p.exists());
         let world = match &persist.path {
-            Some(path) => load_or_create(path, config, load_options, |_| {}),
+            Some(path) => load_or_create(path, &plain, config, load_options, |_| {}),
             None => World::new(config),
         };
         multiplayer::host(world, new_world, host_args, &mut persist);
@@ -404,22 +440,51 @@ fn main() {
         eprintln!(
             "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
-             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
+             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--stop-when-empty S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
              | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \
-             [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
+             [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--difficulty ID] [--sandbox FILE] [--set PATH=VALUE]... [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
         );
         std::process::exit(2);
     }
 }
 
+/// A new world's difficulty from `--difficulty ID`, `--sandbox FILE` and `--set PATH=VALUE`, or
+/// `None` when none is given. A sandbox file is a setup as the game's Sandbox page saves it (or a
+/// new game's `new_game.ron`, whose world it takes).
+fn world_setup(args: &[String]) -> Result<Option<zombye_sim::difficulty::Setup>, String> {
+    let after = |name: &str| args.windows(2).filter(|w| w[0] == name).map(|w| w[1].clone()).collect::<Vec<_>>();
+    let (presets, files, sets) = (after("--difficulty"), after("--sandbox"), after("--set"));
+    if presets.is_empty() && files.is_empty() && sets.is_empty() {
+        return Ok(None);
+    }
+    let mut setup = match files.last() {
+        Some(file) => {
+            let text = std::fs::read_to_string(file).map_err(|e| format!("--sandbox {file}: {e}"))?;
+            ron::from_str::<zombye_sim::difficulty::Setup>(&text)
+                .or_else(|e| ron::from_str::<zombye_net::newgame::NewGame>(&text).map(|g| g.world).map_err(|_| e))
+                .map_err(|e| format!("--sandbox {file}: {e}"))?
+        }
+        None => Default::default(),
+    };
+    if let Some(id) = presets.last() {
+        setup.difficulty = id.clone();
+    }
+    for set in &sets {
+        let (path, value) = set.split_once('=').ok_or_else(|| format!("--set {set}: write it PATH=VALUE, e.g. --set zombie.memory_secs=30"))?;
+        setup.values.insert(path.trim().to_string(), value.trim().to_string());
+    }
+    Ok(Some(setup))
+}
+
 fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, spread: bool, save_bench: bool) {
     let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
     let loaded = persist.path.as_ref().is_some_and(|p| p.exists());
+    let plain = persist.content.clone();
     let mut world = match &persist.path {
-        Some(path) => load_or_create(path, config, load_options, |_| {}),
+        Some(path) => load_or_create(path, &plain, config, load_options, |_| {}),
         None => World::new(config),
     };
     let gen_ms = start.elapsed().as_secs_f32() * 1000.0;

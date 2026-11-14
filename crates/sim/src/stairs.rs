@@ -255,15 +255,10 @@ mod tests {
         let (mut w, id, st) = upstairs_world();
         let site = w.containers().iter().find(|s| s.level == 1 && s.building == st.building).cloned().expect("a container upstairs");
         assert!(w.containers().iter().any(|s| s.level == 0));
-        // Beside it on its floor.
-        let beside = (-1..=site.size.y)
-            .flat_map(|y| (-1..=site.size.x).map(move |x| IVec2::new(x, y)))
-            .filter(|o| (o.x < 0 || o.x >= site.size.x) != (o.y < 0 || o.y >= site.size.y))
-            .map(|o| site.min + o)
-            .find(|t| w.map.upper_tile(*t).is_some_and(|u| u.floor && !u.blocked && u.room == site.room))
-            .expect("a free tile beside it");
-        w.players[0].state.pos = beside.as_vec2() + Vec2::splat(0.5);
-        assert!(w.containers_in_reach(id).contains(&site.id), "not reached from {beside} (site {:?})", site);
+        // In front of it on its floor (#54: containers open only from their front).
+        let at = crate::containers::front_spot(&w, &site, crate::inventory::CONTAINER_REACH - 0.1).expect("room in front of it");
+        w.players[0].state.pos = at;
+        assert!(w.containers_in_reach(id).contains(&site.id), "not reached from {at} (site {:?})", site);
         w.players[0].state.level = 0;
         assert!(!w.containers_in_reach(id).contains(&site.id));
     }

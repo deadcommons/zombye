@@ -65,6 +65,30 @@ the same commit. Original work, open-licensed work, or AI-generated work made on
 let us redistribute it. No assets from other games and no third-party asset packs (bought ones included), not even as
 placeholders.
 
+## Find something to work on
+
+- **Issues for newcomers:** [`good first issue`](https://github.com/deadcommons/zombye/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+  are small and well described; [`help wanted`](https://github.com/deadcommons/zombye/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+  are bigger pieces we'd like a hand with. Everything planned is on the
+  [Game development board](https://github.com/orgs/deadcommons/projects/3).
+- **Claim it before you start:** comment on the issue to say you're taking it, and a maintainer
+  assigns it to you. An issue that is already assigned is taken; ask in it if it looks stalled. If
+  you stop, say so in the issue so someone else can pick it up.
+- **Your own idea:** open an issue with the feature form. Anything that changes how the game plays,
+  a file format, saves, the network protocol, the modding API or a dependency needs a proposal
+  first ([GOVERNANCE.md](GOVERNANCE.md)).
+- **Questions and help:** [Discussions](https://github.com/deadcommons/zombye/discussions) (Q&A,
+  ideas, show and tell), or #help and #dev on [Discord](https://discord.gg/y7NsmVG2br).
+
+**Branches:** work merges into `playtest` first and reaches `main` after a playtest. Branch from
+`playtest` and open your pull request against `playtest`, not `main`.
+
+**Building:** a current stable Rust toolchain and a C++ compiler (Luau, the mod scripting language,
+is built from source). On Linux the client also needs a few system packages; on Debian and Ubuntu:
+`sudo apt install g++ pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev`. The
+server alone (`-p zombye-server`) needs only the compiler. This repo's own art is all you need: the bought
+art in the official build is never required, and contributions never depend on it.
+
 ## Making a change
 
 1. For anything larger than a bug fix, open an issue first so we can agree on the approach.
@@ -76,17 +100,28 @@ placeholders.
    did a real part of it ([AI.md](AI.md)).
 5. Describe what you changed and how you tested it. For gameplay changes, say what a player will
    notice.
+6. **Show it working.** A change a player can see or hear (gameplay, UI, visuals, animation, camera,
+   lighting, sound) comes with proof in the pull request: screenshots, a before and after pair, or a
+   short video or GIF of it in the game. A reviewer should be able to judge it without building your
+   branch. Changes to code alone, docs, tests or tooling don't need any.
+   - Offscreen renders are the easiest way: `zombye --render-to shot.png --load SAVE ...` draws one
+     picture with no window (see AGENTS.md, Offscreen), and the same command before and after your
+     change makes a fair pair. For movement or timing, record a short clip (`--autoplay`, `--walk`,
+     `--turn` and the other recording flags play it by themselves).
+   - Drag the pictures into the pull request's description or a comment. Don't commit them: review
+     pictures never go in the tree (`saves/` is git-ignored for them).
+   - Keep files small: a PNG or JPEG about 1280 px wide, a clip under 30 seconds.
+   - Pictures from this repo's own art are what we expect. Maintainers with the official build may
+     add pictures of it with the bought art; that's fine to show. The bought asset files themselves
+     never come into this repo.
 
 ## How decisions are made
 
 - Small changes: a maintainer reviews and merges.
-- Bigger decisions (a new system, a design change from [VISION.md](VISION.md), licensing, project
-  process) go through an RFC: a pull request that adds `docs/rfcs/NNNN-short-title.md`. Anyone can
-  open or comment on one. A maintainer opens a comment period (7 days for licensing or process,
-  3 days otherwise), and it merges with approval from a maintainer other than the author, once
-  every maintainer objection is resolved.
-- Dead Commons, as the project's steward, has the final say when an objection can't be resolved,
-  and explains why on the pull request.
+- Bigger changes start as a proposal in the **Proposals** category of
+  [Discussions](https://github.com/deadcommons/zombye/discussions), open for comment for at least a
+  week and decided at the weekly call. [GOVERNANCE.md](GOVERNANCE.md) has the whole process and who
+  decides.
 
 ## Credits
 

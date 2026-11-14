@@ -194,6 +194,7 @@ const TOUCHING: f32 = 0.45;
 pub fn faced(
     map: &TileMap,
     sites: &[ContainerSite],
+    front_slack: f32,
     switches: &[Option<zombye_sim::power::SwitchSpot>],
     fires: &[zombye_sim::FireView],
     bodies: impl IntoIterator<Item = (u32, Vec2)>,
@@ -261,12 +262,20 @@ pub fn faced(
         }
     }
     for (k, s) in sites.iter().enumerate() {
-        if s.level != level || s.room != room || s.distance(pos) > zombye_sim::inventory::CONTAINER_REACH {
+        // Only from in front of it (#54), as the server has it: never from beside or behind.
+        if s.level != level || s.room != room || s.distance(pos) > zombye_sim::inventory::CONTAINER_REACH || !s.in_front(pos, front_slack) {
             continue;
         }
         let near = pos.clamp(s.min.as_vec2(), (s.min + s.size).as_vec2());
-        // In reach but not in front: still searched (the server takes the nearest), after the rest.
-        take(Target::Container(k), near, score(near).or(Some(8.0 + s.distance(pos))));
+        // Brushing against a cupboard doesn't make it the thing faced (a door you face beside it
+        // wins): only within the cone ahead. In reach but not ahead: still searched (the server
+        // takes the nearest), after the rest.
+        let ahead = {
+            let to = near - pos;
+            let d = to.length();
+            (d > 1e-3 && (to / d).dot(ahead) >= cos).then(|| d * (2.0 - (to / d).dot(ahead)))
+        };
+        take(Target::Container(k), near, ahead.or(Some(8.0 + s.distance(pos))));
     }
     best.map(|(_, t, at)| (t, at))
 }
@@ -384,11 +393,15 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
             let Some(s) = sites.get(k) else { return (String::new(), Vec::new()) };
             let name = data.containers.get(s.def as usize).map_or("container".to_string(), |d| d.name.clone());
             let near = s.distance(pos) <= zombye_sim::inventory::CONTAINER_REACH && map.tile(pos.floor().as_ivec2()).room == s.room;
-            let lines = if near {
-                let open = view.and_then(|v| v.open.as_ref()).is_some_and(|c| c.id == s.id);
-                vec![WorldEntry::send(if open { "Look inside" } else { "Search" }, Intent::Search { player: me, container: Some(s.id) })]
-            } else {
+            let open = view.and_then(|v| v.open.as_ref()).is_some_and(|c| c.id == s.id);
+            let lines = if open {
+                vec![WorldEntry::send("Look inside", Intent::Search { player: me, container: Some(s.id) })]
+            } else if !near {
                 vec![WorldEntry::say("Too far away: walk up to it")]
+            } else if !s.in_front(pos, data.front_slack_m) {
+                vec![WorldEntry::say("Stand in front of it to open it")]
+            } else {
+                vec![WorldEntry::send("Search", Intent::Search { player: me, container: Some(s.id) })]
             };
             (name, lines)
         }

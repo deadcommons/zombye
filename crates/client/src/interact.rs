@@ -112,7 +112,7 @@ fn look(
     let sites = sites.get_or_insert_with(|| zombye_sim::containers::find_sites(&map.0, &join.containers));
     let switches = switches.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
     let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
-    let thing = world_actions::faced(&map.0, sites, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
+    let thing = world_actions::faced(&map.0, sites, join.containers.front_slack_m, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
     let menu = |t: Target, at: Vec2| {
         let (title, lines) = world_actions::entries(t, &map.0, sites, &join.containers, &join.items, &join.builds, &join.blind_tag, join.fire.reach, me.id, pos, link.own(me.id));
         (!lines.is_empty()).then_some(Faced::Thing { title, lines, at })
@@ -150,6 +150,7 @@ fn press(
     mut link: ResMut<ServerLink>,
     mut menu: ResMut<ItemMenu>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    (mode, mut wheel): (Res<crate::pad::InputMode>, ResMut<crate::wheel::Wheel>),
     mut down: Local<Option<f32>>,
     mut held: Local<bool>,
 ) {
@@ -186,6 +187,8 @@ fn press(
             Some(crate::render_scale::from_view(camera, window, v))
         };
         match &facing.0 {
+            // On the controller, a wheel round the middle of the screen (`wheel.rs`).
+            Some(Faced::Thing { title, lines, .. }) if mode.pad => wheel.show(crate::wheel::Kind::Actions, title.clone(), crate::wheel::action_entries(lines)),
             Some(Faced::Thing { title, lines, at }) => menu.show_world(title.clone(), lines.clone(), spot(*at).unwrap_or(Vec2::splat(200.0))),
             Some(Faced::Floor(id, _)) => {
                 let at = link.curr.items.iter().find(|i| i.id == *id).map(|i| i.pos).unwrap_or(me.curr.pos);
@@ -303,7 +306,7 @@ fn prompt(
     };
     let (does, thing) = f.primary();
     let more = f.has_more() && crate::help_text::keys();
-    let key = keys::short(Action::Interact);
+    let key = crate::pad::prompt_action(Action::Interact).unwrap_or_else(|| keys::short(Action::Interact));
     let now = (does, thing, more, key);
     *vis = Visibility::Inherited;
     if shown.as_ref() == Some(&now) {

@@ -145,7 +145,9 @@ The design, and what we keep and change from the classics of the genre, is in
 
 ## Play it
 
-**From source.** You need a current stable Rust toolchain.
+**From source.** You need a current stable Rust toolchain and a C++ compiler. On Linux, also
+`sudo apt install g++ pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev`
+(Debian and Ubuntu names).
 
 ```bash
 cargo run --release --bin zombye
@@ -221,7 +223,7 @@ cargo run --release --bin zombye -- --connect localhost        # join it
 | **Agents** | [AGENTS.md](AGENTS.md), [docs/benchmark.md](docs/benchmark.md) |
 | **Hosting** | [docs/self-hosting.md](docs/self-hosting.md) |
 | **Design** | [VISION.md](VISION.md), [docs/PLAN.md](docs/PLAN.md), [docs/art-direction.md](docs/art-direction.md) |
-| **Roadmap** | the [Game development board](https://github.com/orgs/deadcommons/projects/3) and the [milestones](https://github.com/deadcommons/zombye/milestones) |
+| **Roadmap** | the [Game development board](https://github.com/orgs/deadcommons/projects/3) |
 
 ## Come and build it with us
 
@@ -229,6 +231,11 @@ Contributions from people and their agents are welcome: code, data, mods, bug re
 
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) first, especially the **clean-room rules**, and follow
   the [code of conduct](CODE_OF_CONDUCT.md).
+- Pick something: [good first issues](https://github.com/deadcommons/zombye/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+  or the [board](https://github.com/orgs/deadcommons/projects/3). Comment on the issue to claim it,
+  then branch from `playtest` and open your pull request against `playtest`.
+- Questions go in [Discussions](https://github.com/deadcommons/zombye/discussions); bigger changes
+  start as a proposal there ([GOVERNANCE.md](GOVERNANCE.md)).
 - Sign off every commit (`git commit -s`). That's the [DCO](https://developercertificate.org/), and
   there's no CLA.
 - Using AI to help? Good, so do we. [AI.md](AI.md) says how: you answer for what you send, and you

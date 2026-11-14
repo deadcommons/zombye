@@ -33,6 +33,7 @@ use bevy::window::PrimaryWindow;
 const LOGO: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0cb1");
 const WORDMARK: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0cb2");
 const MARK: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0cb3");
+const HORIZON: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0cb4");
 
 /// The name as text, where the logo isn't there to say it.
 pub const NAME: &str = "ZOMBYE";
@@ -50,6 +51,9 @@ pub enum Mark {
     Wordmark,
     /// The road Z.
     Z,
+    /// The horizon: the striped sun and the town's skyline, no word, to stand along the foot of
+    /// a screen (its skyline is the ground's charcoal, so it runs into the ground below it).
+    Horizon,
 }
 
 impl Mark {
@@ -58,6 +62,7 @@ impl Mark {
             Mark::Logo => "logo.png",
             Mark::Wordmark => "wordmark.png",
             Mark::Z => "mark.png",
+            Mark::Horizon => "horizon.png",
         }
     }
 
@@ -66,12 +71,13 @@ impl Mark {
             Mark::Logo => LOGO,
             Mark::Wordmark => WORDMARK,
             Mark::Z => MARK,
+            Mark::Horizon => HORIZON,
         }
     }
 }
 
 /// The size in pixels of each picture that loaded (`Mark as usize`).
-static LOADED: OnceLock<[Option<Vec2>; 3]> = OnceLock::new();
+static LOADED: OnceLock<[Option<Vec2>; 4]> = OnceLock::new();
 
 /// The brand folder, if there is one (looked for once).
 pub fn root() -> Option<&'static Path> {
@@ -118,8 +124,8 @@ impl Plugin for BrandPlugin {
     fn build(&self, app: &mut App) {
         let Some(dir) = root() else { return };
         let Some(mut images) = app.world_mut().get_resource_mut::<Assets<Image>>() else { return };
-        let mut loaded = [None; 3];
-        for mark in [Mark::Logo, Mark::Wordmark, Mark::Z] {
+        let mut loaded = [None; 4];
+        for mark in [Mark::Logo, Mark::Wordmark, Mark::Z, Mark::Horizon] {
             if let Some(image) = decode(dir, mark.file()) {
                 loaded[mark as usize] = Some(image.size().as_vec2());
                 let _ = images.insert(mark.handle().id(), image);
@@ -151,6 +157,19 @@ fn window_icon(_main: NonSendMarker, mut commands: Commands, icon: Res<IconPixel
     if set {
         commands.remove_resource::<IconPixels>();
     }
+}
+
+/// The horizon `high` UI pixels high, its foot `above` pixels over the foot of its parent, at the
+/// parent's right-hand end, behind what the parent holds (spawn it first; keep what is in front of
+/// it to the left). Nothing without the brand folder.
+pub fn horizon(parent: &mut ChildSpawnerCommands, high: f32, above: f32) {
+    let Some(size) = LOADED.get().and_then(|l| l[Mark::Horizon as usize]) else { return };
+    let wide = (high * size.x / size.y.max(1.0)).round();
+    parent.spawn((
+        ImageNode::new(Mark::Horizon.handle()),
+        Node { position_type: PositionType::Absolute, right: px(0), bottom: px(above), width: px(wide), height: px(high), ..default() },
+        Pickable::IGNORE,
+    ));
 }
 
 /// The name as a title, for where there is no logo to draw: "ZOMBYE" `size` high with a small TM

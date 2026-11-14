@@ -515,12 +515,13 @@ pub(crate) fn virtual_hearing(z: &mut Zombies, regions: &RegionIndex, map: &Tile
             continue;
         }
         let outdoors = map.room_at(s.pos) == 0;
-        regions.for_each_within(s.pos, s.radius, |i| {
+        let radius = s.radius * t.hearing;
+        regions.for_each_within(s.pos, radius, |i| {
             let d = z.pos[i].distance(s.pos);
-            if d > s.radius || s.source == SoundSource::Zombie(z.id[i]) {
+            if d > radius || s.source == SoundSource::Zombie(z.id[i]) {
                 return;
             }
-            if d > s.radius * t.wall_muffle && !(outdoors && map.room_at(z.pos[i]) == 0) {
+            if d > radius * t.wall_muffle && !(outdoors && map.room_at(z.pos[i]) == 0) {
                 return;
             }
             senses::react(z, i, s, d, t);

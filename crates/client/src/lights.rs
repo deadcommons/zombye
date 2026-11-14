@@ -156,7 +156,7 @@ impl Plugin for LightsPlugin {
             .init_resource::<LitRooms>()
             .init_resource::<RoomPlaces>()
             .add_systems(Startup, spawn_other_lights)
-            .add_systems(Update, (sync_lit_rooms, window_lights, room_lights, other_lights, crate::campfire::fires, crate::campfire::built_fires).chain().before(crate::fog::update_fog));
+            .add_systems(Update, (sync_lit_rooms, window_lights, room_lights, other_lights, crate::vehicles_render::car_lights, crate::campfire::fires, crate::campfire::built_fires).chain().before(crate::fog::update_fog));
     }
 }
 
