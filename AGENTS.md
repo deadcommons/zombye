@@ -424,7 +424,7 @@ the pad is in use and the main menu (`MenuLayer::up`), the new-game screen (`Fro
 is up, one has the focus (a mustard outline, the menus' accent): the d-pad or the left stick moves it to the nearest button that way (held:
 repeating; the focus is a `PointerOver`, so a button lights as under the mouse and the new-game screen shows the line
 about it), A presses it (the same `PointerPress` a click triggers, so buttons need nothing of their own), LB / RB
-change the settings' tab or the new-game page, B goes back. Only the screen on
+change the settings' tab or the new-game page, B goes back. **The inventory's frame goes by focus too** (#12 stage 4): its things, slots, chips and rail tabs are `Focusable` (`flat::chip` and `flat::button` are), A is a click on the one with the focus (moves it across; never a drag: `Focus::pad_press`), Y the right-click (its menu, whose lines then take the focus, and back where it was after: `Focus::under`), LB / RB go round the rail (`inventory_ui::TabStep`), and the hover card and menu stand by the focus (`Focus::pointer_at`); the footer says so. Only the screen on
 top counts (the highest `GlobalZIndex` over a button), and after a redraw the focus goes to the button nearest where
 it was. **The on-screen keyboard** (`osk.rs`): while the pad is in use and a line is typed (the chat line, which Hold
 Up opens: `pad.ron`'s `chat`; the inventory's search; the server browser's fields) a keyboard comes up at the foot
@@ -432,7 +432,7 @@ of the screen: the d-pad or stick moves over it, A types, X deletes, Y is a spac
 B cancels (Esc). It writes keyboard messages with `KeyCode::Unidentified` key codes, so text fields take it as they
 are, no game key is pressed and the pad stays the one in use. `--osk` shows it, for pictures. Nothing of it reaches
 the sim, a save or a snapshot. **Prompts name the buttons** (`pad::prompt`, `prompt_action`, `showing`): while the controller is in use every keycap and key hint (`theme::keycap`, `menu_skin::keycap`, the new-game footer, the E prompt, the current action, the first night's hints, the death and morning screens, the inventory's footer) shows the button that does the same, by the pad's maker's names, and leaves out a hint no button does; screens draw again when the pad is picked up or put down. **A new hint passes the key as the keyboard calls it** to one of those (or `keycap_as_is` for a button already named). A line in the top right corner (`pad::Toast`) says when a pad is plugged in or out and which the game follows. A on the death screen starts again, A on the morning screen carries on (`Pad::just`). **Not yet** (the plan's later stages): focus on the
-inventory and the server browser's list, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab,
+server browser's list, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab,
 a Steam Deck pass. Tests: `pad::tests`, `wheel::tests`, `focus::tests`, `osk::tests`, `settings_ui`'s
 `the_controller_list_shows_every_button`.
 

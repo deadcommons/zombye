@@ -75,11 +75,31 @@ pub enum Tab {
 #[derive(Resource, Default)]
 struct Goto(Option<Tab>);
 
+/// The controller's bumpers on the frame (`focus.rs`): this many screens on down the rail (back,
+/// if less than 0), once.
+#[derive(Resource, Default)]
+pub struct TabStep(pub i32);
+
+/// The rail's screens in order.
+const RAIL: [Tab; 5] = [Tab::Inventory, Tab::Make, Tab::Build, Tab::Health, Tab::Skills];
+
 /// Keeps the frame and its screens in step. Health, Skills and Build are shown while their own
 /// resources say open (H, K and Shift+B, `--health`, "use on a wound"): opening one opens the frame
 /// on it and shuts the others; its key again goes back to the game; shutting the frame shuts all.
-fn screens(mut panel: ResMut<InventoryPanel>, mut health: ResMut<crate::health_ui::HealthPanel>, mut skills: ResMut<crate::skills_ui::SkillsPanel>, mut build: ResMut<crate::build_ui::BuildMenu>, mut make: ResMut<MakeUi>, mut goto: ResMut<Goto>, mut was: Local<[bool; 4]>) {
+#[allow(clippy::too_many_arguments)]
+fn screens(mut panel: ResMut<InventoryPanel>, mut health: ResMut<crate::health_ui::HealthPanel>, mut skills: ResMut<crate::skills_ui::SkillsPanel>, mut build: ResMut<crate::build_ui::BuildMenu>, mut make: ResMut<MakeUi>, mut goto: ResMut<Goto>, mut step: Option<ResMut<TabStep>>, mut was: Local<[bool; 4]>) {
     let [p, h, s, b] = *was;
+    if let Some(step) = step.as_mut().filter(|s| s.0 != 0)
+        && goto.0.is_none()
+        && panel.open
+    {
+        let now = if health.open { Tab::Health } else if skills.open { Tab::Skills } else if build.open { Tab::Build } else if make.shown { Tab::Make } else { Tab::Inventory };
+        let at = RAIL.iter().position(|t| *t == now).unwrap_or(0) as i32;
+        goto.0 = Some(RAIL[(at + step.0).rem_euclid(RAIL.len() as i32) as usize]);
+    }
+    if let Some(step) = step.as_mut().filter(|s| s.0 != 0) {
+        step.0 = 0;
+    }
     let mut want = [panel.open, health.open, skills.open, build.open];
     if let Some(tab) = goto.0.take() {
         want = [true, tab == Tab::Health, tab == Tab::Skills, tab == Tab::Build];
@@ -629,6 +649,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<Clicks>()
             .init_resource::<Drag>()
             .init_resource::<Goto>()
+            .init_resource::<TabStep>()
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
@@ -1034,8 +1055,9 @@ fn click_intent(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) 
 
 /// This frame's presses on rows, as intents: at most one per button (one physical click is one
 /// press, however many times picking reports it), none for what is already on its way.
-fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut menu: ResMut<ItemMenu>) {
-    menu_clicks(&mut clicks, &mut menu, windows.single().ok().and_then(|w| w.cursor_position()));
+#[allow(clippy::too_many_arguments)]
+fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, focus: Option<Res<crate::focus::Focus>>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut menu: ResMut<ItemMenu>) {
+    menu_clicks(&mut clicks, &mut menu, windows.single().ok().and_then(|w| pointer_or_focus(w, focus.as_deref())));
     drain_clicks(me.id, time.elapsed_secs(), &mut clicks, &mut flight, &mut out);
 }
 
@@ -1302,6 +1324,7 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str, back: Color) {
                     flat::key(r, &k);
                 }
             })
+            .insert(crate::focus::Focusable)
             .observe(|_: On<PointerPress>, mut panel: ResMut<InventoryPanel>| panel.open = false);
     });
 }
@@ -1313,7 +1336,7 @@ fn rail(mid: &mut ChildSpawnerCommands, tab: Tab, back: Color) {
         use crate::keys::{Action, short};
         for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some(Action::Inventory)), (Tab::Make, "claw_hammer", Some(Action::Make)), (Tab::Build, "wooden_plank", Some(Action::Build)), (Tab::Health, "plasters", Some(Action::Health)), (Tab::Skills, "magazine", Some(Action::Skills))] {
             let key = key.map(short);
-            rail_tab(r, &format!("{to:?}"), icon, key.as_deref(), tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
+            rail_tab(r, &format!("{to:?}"), icon, key.as_deref(), tab == to).insert(crate::focus::Focusable).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
         }
     });
 }
@@ -1347,16 +1370,24 @@ fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab, 
         if let Some((text, ok)) = note {
             f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
         }
-        // The controller doesn't move round this screen yet: only the way back.
+        // The controller goes round the frame by focus (`focus.rs`).
         if crate::pad::showing() {
-            let back = match tab {
-                Tab::Health => crate::keys::Action::Health,
-                Tab::Skills => crate::keys::Action::Skills,
-                Tab::Build => crate::keys::Action::Build,
-                _ => crate::keys::Action::Inventory,
-            };
-            let b = crate::pad::prompt_action(back).or_else(|| crate::pad::prompt_action(crate::keys::Action::Inventory)).unwrap_or_else(|| crate::pad::button(crate::pad::Button::B));
-            flat::hint(f, &[&b], "back to the game");
+            use crate::pad::{Button, button};
+            let (a, y) = (button(Button::A), button(Button::Y));
+            flat::hint(f, &[&button(Button::Up), &button(Button::Down)], "move round");
+            match tab {
+                Tab::Inventory => {
+                    flat::hint(f, &[&a], "move it across");
+                    flat::hint(f, &[&y], "everything you can do with it");
+                }
+                Tab::Make => {
+                    flat::hint(f, &[&a], "make it");
+                    flat::hint(f, &[&y], "favourite");
+                }
+                _ => flat::hint(f, &[&a], "press"),
+            }
+            flat::hint(f, &[&button(Button::LB), &button(Button::RB)], "screens");
+            flat::hint(f, &[&button(Button::B)], "back to the game");
             return;
         }
         match tab {
@@ -1553,6 +1584,7 @@ fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
                 flat::key(b, "/");
             }
         })
+        .insert(crate::focus::Focusable)
         .observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.typing = true);
         if !find.query.is_empty() || !find.groups.is_empty() {
             flat::chip(r, "Clear", false).observe(|_: On<PointerPress>, mut find: ResMut<Find>| *find = Find::default());
@@ -2084,7 +2116,7 @@ struct CardRoot;
 /// The hover card: a thing's whole name, its kind and weight, and what there is to say about
 /// it, beside the pointer. Drawn when what the pointer is on changes.
 #[allow(clippy::too_many_arguments)]
-fn draw_card(mut commands: Commands, card: Res<HoverCard>, panel: Res<InventoryPanel>, menu: Res<ItemMenu>, join: Res<JoinInfo>, link: Res<ServerLink>, ui: Res<UiScale>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut drawn: Local<Option<Entity>>, roots: Query<Entity, With<CardRoot>>) {
+fn draw_card(mut commands: Commands, card: Res<HoverCard>, panel: Res<InventoryPanel>, menu: Res<ItemMenu>, join: Res<JoinInfo>, link: Res<ServerLink>, ui: Res<UiScale>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, focus: Option<Res<crate::focus::Focus>>, mut drawn: Local<Option<Entity>>, roots: Query<Entity, With<CardRoot>>) {
     let want = card.0.filter(|_| panel.open && menu.open.is_none());
     if want.map(|w| w.0) == *drawn {
         return;
@@ -2096,7 +2128,7 @@ fn draw_card(mut commands: Commands, card: Res<HoverCard>, panel: Res<InventoryP
     let Some((_, stack, n)) = want else { return };
     let Some(def) = join.items.get(stack.item as usize) else { return };
     let Some(window) = windows.single().ok() else { return };
-    let Some(cursor) = window.cursor_position() else { return };
+    let Some(cursor) = pointer_or_focus(window, focus.as_deref()) else { return };
     let size = Vec2::new(280.0, 120.0);
     let at = (cursor / ui.0.max(0.1) + Vec2::new(18.0, 18.0)).min((Vec2::new(window.width(), window.height()) / ui.0.max(0.1) - size).max(Vec2::ZERO));
     let state = state_of(&join.items, Wear::of(&join), link.curr.game_minute, &stack);
@@ -2249,6 +2281,7 @@ fn make_row(c: &mut ChildSpawnerCommands, ui: &MakeUi, label: String, making: Op
         }
         r.spawn((Text::new(right), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
     })
+    .insert(crate::focus::Focusable)
     .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut ui: ResMut<MakeUi>| {
         if hover && let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
@@ -2625,7 +2658,8 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
             c.0 = None;
         }
     })
-    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>, mut drag: Option<ResMut<Drag>>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>| {
+    .insert(crate::focus::Focusable)
+    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>, mut drag: Option<ResMut<Drag>>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, focus: Option<Res<crate::focus::Focus>>| {
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
         let keys_of = action.keys();
@@ -2644,7 +2678,9 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
         let click = RowClick { action: action.clone(), button: ev.button, one };
         // The left button on a thing is held ([`drag`]): let go where it was pressed it is the
         // click, moved first it is dragged.
-        if let (PointerButton::Primary, Some(_), None, Some(drag)) = (ev.button, action.left, action.craft, drag.as_mut()) {
+        // (The controller's A is a click at once: it has nothing to drag with.)
+        let pad = focus.is_some_and(|f| f.pad_press);
+        if let (PointerButton::Primary, Some(_), None, Some(drag), false) = (ev.button, action.left, action.craft, drag.as_mut(), pad) {
             drag.0 = Some(Held { click, from: windows.single().ok().and_then(|w| w.cursor_position()).unwrap_or_default(), dragging: false });
             return;
         }
@@ -3415,6 +3451,15 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMu
     menu.fresh = false;
 }
 
+/// Where a card or menu stands (window pixels, as the pointer's): by the controller's focus while
+/// it has one (`focus.rs`), else at the pointer.
+fn pointer_or_focus(window: &Window, focus: Option<&crate::focus::Focus>) -> Option<Vec2> {
+    match focus.and_then(|f| f.pointer_at()) {
+        Some(at) => Some(at / window.scale_factor().max(0.1)),
+        None => window.cursor_position(),
+    }
+}
+
 /// About how big a menu of `entries` lines is drawn (UI pixels), for keeping it on screen.
 fn menu_size(entries: usize) -> Vec2 {
     Vec2::new(300.0, 52.0 + 29.0 * entries as f32)
@@ -3457,6 +3502,7 @@ fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, wind
                         let colour = if matches!(e.act, MenuDo::Nothing) { DIM } else { TEXT };
                         r.spawn((Text::new(e.label.clone()), font(flat::BODY), TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
                     })
+                    .insert(crate::focus::Focusable)
                     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
                         if let Ok(mut bg) = q.get_mut(ev.entity) {
                             bg.0 = ROW_HOVER;
@@ -4379,7 +4425,25 @@ mod tests {
         app.world_mut().resource_mut::<Goto>().0 = Some(Tab::Health);
         app.update();
         assert_eq!(state(&mut app), (true, true, false));
+        // The controller's bumpers: on down the rail to Skills, round to Inventory, back to Skills.
+        app.init_resource::<TabStep>();
+        app.world_mut().resource_mut::<TabStep>().0 = 1;
+        app.update();
+        app.update();
+        assert_eq!(state(&mut app), (true, false, true));
+        app.world_mut().resource_mut::<TabStep>().0 = 1;
+        app.update();
+        app.update();
+        assert_eq!(state(&mut app), (true, false, false));
+        assert!(!app.world().resource::<MakeUi>().shown, "round past Skills to the Inventory");
+        assert_eq!(app.world().resource::<TabStep>().0, 0, "a step is taken once");
+        app.world_mut().resource_mut::<TabStep>().0 = -1;
+        app.update();
+        app.update();
+        assert_eq!(state(&mut app), (true, false, true));
         // H again: back to the game.
+        app.world_mut().resource_mut::<HealthPanel>().open = true;
+        app.update();
         app.world_mut().resource_mut::<HealthPanel>().open = false;
         app.update();
         assert_eq!(state(&mut app), (false, false, false));

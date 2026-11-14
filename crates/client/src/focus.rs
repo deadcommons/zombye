@@ -7,6 +7,11 @@
 //! button that way (as if the pointer were over it: lit, and on the new-game screen its line shown),
 //! A presses it (the same press a click makes, so every button works with no change of its own),
 //! the bumpers change the settings' tab or the new-game page, and B goes back (Esc, `pad.rs`).
+//! The inventory's frame goes the same way (#12, stage 4): its things, slots, chips and rail tabs
+//! are focusable, A is a click on what has the focus (move it across, or press the chip), Y the
+//! right-click (the thing's menu, whose lines are then the focus), and the bumpers go round the
+//! frame's screens. A press the pad makes is never the start of a drag ([`Focus::pad_press`]), and
+//! the thing's card and menu stand by the focus, not the mouse ([`Focus::pointer_at`]).
 //! Only the buttons of the screen on top count (the one with the highest `GlobalZIndex` over it).
 //! When a screen is drawn again the focus goes to the button nearest where it was.
 //!
@@ -48,6 +53,20 @@ pub struct Focus {
     next_step: f32,
     /// The button the outline is drawn on.
     outlined: Option<Entity>,
+    /// Where the focus last was on each screen under the top one, to come back to it when the
+    /// screen over it goes (an item's menu over the inventory).
+    under: Vec<(i32, Vec2)>,
+    /// The press being sent is the pad's (set while its observers run): it is a click at once,
+    /// never the start of a drag.
+    pub pad_press: bool,
+}
+
+impl Focus {
+    /// Where the focused button's middle is (physical pixels), while the pad has a focus: what a
+    /// screen stands its card or menu by in place of the pointer.
+    pub fn pointer_at(&self) -> Option<Vec2> {
+        self.on.and(self.last)
+    }
 }
 
 pub struct FocusPlugin;
@@ -106,14 +125,17 @@ fn navigate(
     front: Option<Res<crate::new_game::Front>>,
     mut new_game: Option<ResMut<crate::new_game::Screen>>,
     mut settings: Option<ResMut<crate::settings_ui::SettingsUi>>,
+    (inventory, item_menu, mut tab_step): (Option<Res<crate::inventory_ui::InventoryPanel>>, Option<Res<crate::inventory_ui::ItemMenu>>, Option<ResMut<crate::inventory_ui::TabStep>>),
     time: Res<Time>,
     buttons: Query<(Entity, &ComputedNode, &UiGlobalTransform, &InheritedVisibility, Has<Lead>), With<Focusable>>,
     parents: Query<&ChildOf>,
     z: Query<&GlobalZIndex>,
 ) {
+    focus.pad_press = false;
     let settings_open = settings.as_ref().is_some_and(|s| s.open);
     let front_up = front.as_ref().is_some_and(|f| f.up());
-    let up = pause.as_ref().is_some_and(|p| p.open) || settings_open || menu.as_ref().is_some_and(|m| m.up) || front_up;
+    let inventory_open = inventory.as_ref().is_some_and(|i| i.open) || item_menu.as_ref().is_some_and(|m| m.is_up());
+    let up = pause.as_ref().is_some_and(|p| p.open) || settings_open || menu.as_ref().is_some_and(|m| m.up) || front_up || inventory_open;
     if !up || !mode.as_ref().is_some_and(|m| m.pad) {
         if focus.on.is_some() || focus.layer.is_some() {
             *focus = Focus { outlined: focus.outlined, ..default() };
@@ -144,6 +166,21 @@ fn navigate(
     let start = first(&leads).or_else(|| first(&items));
     // Where the focus is: still on a button of the top screen, else nearest where it was, else the first.
     let here = focus.on.and_then(|e| items.iter().find(|i| i.0 == e).copied());
+    // A screen come up over this one: remember where the focus was here. Back on a screen that
+    // was under: where it was on it.
+    if let Some(was) = focus.layer.filter(|l| *l != top) {
+        if was < top
+            && let Some(last) = focus.last
+        {
+            focus.under.retain(|u| u.0 < was);
+            focus.under.push((was, last));
+        } else {
+            let back = focus.under.iter().find(|u| u.0 == top).map(|u| u.1);
+            focus.under.retain(|u| u.0 < top);
+            focus.last = back;
+            focus.layer = back.map(|_| top);
+        }
+    }
     let on = match here {
         Some(h) => Some(h),
         None if focus.layer == Some(top) => focus.last.and_then(|l| nearest(l, &items)).or(start).and_then(|e| items.iter().find(|i| i.0 == e).copied()),
@@ -190,16 +227,19 @@ fn navigate(
             s.step_tab(pad.nav_tab);
         } else if front_up && let Some(s) = new_game.as_mut() {
             s.step_tab(pad.nav_tab);
+        } else if inventory_open && let Some(s) = tab_step.as_mut() {
+            s.0 = pad.nav_tab;
         }
     }
-    if pad.confirm {
-        commands.trigger(press(on, at));
+    if pad.confirm || pad.alt {
+        focus.pad_press = true;
+        commands.trigger(press(on, at, if pad.confirm { PointerButton::Primary } else { PointerButton::Secondary }));
     }
 }
 
-/// The press a primary click on `entity` makes, as if the pointer were at `at`.
-fn press(entity: Entity, at: Vec2) -> PointerPress {
-    PointerPress { entity, pointer: pointer(at), button: PointerButton::Primary, hit: hit(), count: 1 }
+/// The press a click of `button` on `entity` makes, as if the pointer were at `at`.
+fn press(entity: Entity, at: Vec2, button: PointerButton) -> PointerPress {
+    PointerPress { entity, pointer: pointer(at), button, hit: hit(), count: 1 }
 }
 
 /// The mouse's pointer, as if at `at`.

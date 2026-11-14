@@ -707,6 +707,7 @@ pub mod flat {
         if !on {
             hover(&mut e, rest);
         }
+        e.insert(crate::focus::Focusable);
         e
     }
 
@@ -724,6 +725,7 @@ pub mod flat {
         if !main {
             hover(&mut e, rest);
         }
+        e.insert(crate::focus::Focusable);
         e
     }
 
