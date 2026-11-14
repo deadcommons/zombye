@@ -241,11 +241,11 @@ fn stepper(label: &'static str, about: &'static str, value: f32, lo: f32, hi: f3
 /// and the UI its own sharpness; only the world is drawn smaller and scaled up.
 pub(crate) fn screen_resolution(s: &ClientSettings, screen: Option<UVec2>) -> Row {
     use crate::render_scale::{auto_scale, choices, size_at};
-    let about = "The size the world is drawn at, scaled up to fill the screen. The UI stays sharp. Auto keeps it smooth.";
+    let about = "The size the world is drawn at, scaled up to fill the screen; the UI stays sharp. Auto follows the graphics preset: full size at High and Ultra, 1080 lines at Medium, 900 at Low.";
     let Some(screen) = screen else {
         return Row { label: "Resolution", about, control: Control::Stepper { value: "Auto".into(), down: None, up: None } };
     };
-    let auto = auto_scale(screen, crate::render_scale::screen_scale_factor());
+    let auto = auto_scale(screen, s.graphics.preset);
     let now = s.fullscreen_scale.unwrap_or(auto);
     let list = choices(screen);
     let at = list.iter().position(|c| (c - now).abs() < 0.01).unwrap_or_else(|| list.iter().rposition(|c| *c <= now).unwrap_or(0));
@@ -1167,16 +1167,17 @@ mod tests {
         // Full screen, before the screen is known: Auto, nothing to step.
         s.fullscreen = true;
         assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Auto"));
-        // On a 6K screen at 2x: Auto is half, and the list steps through the 3D resolutions (up: two thirds).
+        // On a 6K screen at High: Auto is the screen's own, and the list steps down from it.
         let six_k = Some(UVec2::new(6016, 3384));
-        let Control::Stepper { value, down: Some(down), up: Some(up) } = screen_resolution(&s, six_k).control else { panic!() };
-        assert_eq!(value, "Auto (3008 x 1692)");
-        change(&mut s, up);
-        assert!(matches!(screen_resolution(&s, six_k).control, Control::Stepper { ref value, .. } if value == "4011 x 2256"));
+        let Control::Stepper { value, down: Some(down), up: None } = screen_resolution(&s, six_k).control else { panic!() };
+        assert_eq!(value, "Auto (6016 x 3384)");
+        change(&mut s, down);
+        assert!(matches!(screen_resolution(&s, six_k).control, Control::Stepper { ref value, .. } if value == "4512 x 2538"));
+        // At Medium Auto is 1080 lines.
         let mut t = s.clone();
         t.fullscreen_scale = None;
-        change(&mut t, down);
-        assert!(matches!(screen_resolution(&t, six_k).control, Control::Stepper { ref value, .. } if value == "2560 x 1440"));
+        t.graphics.preset = crate::graphics::Preset::Medium;
+        assert!(matches!(screen_resolution(&t, six_k).control, Control::Stepper { ref value, .. } if value == "Auto (1920 x 1080)"));
         // The biggest is the screen's own, with nothing above it.
         t.fullscreen_scale = Some(1.0);
         assert!(matches!(screen_resolution(&t, six_k).control, Control::Stepper { ref value, up: None, .. } if value == "6016 x 3384"));
