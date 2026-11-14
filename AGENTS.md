@@ -4,11 +4,25 @@ Zombye is an open-source, true-3D isometric zombie survival game (Rust + Bevy), 
 can read it, run it, play it and mod it. The design is in [docs/PLAN.md](docs/PLAN.md). Read it
 before making architectural changes.
 
-Work is tracked in GitHub issues on the public
-[Game development board](https://github.com/orgs/deadcommons/projects/3), not in the repo. Start from an issue
-(open one if there is none) and set it In Progress; reference it in commits (`Refs #N`, `Closes #N`); when
-the work is done, close it with a comment naming the commit or PR, or comment where it got to if it stops
-part way. New work you find becomes its own issue, not a TODO.
+## Start here (anyone, and any agent working for them)
+
+This file is long: the rules and the layout come first, then a reference for every system. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) and [AI.md](AI.md) too. In short:
+
+- **Find or open an issue** on the public [Game development board](https://github.com/orgs/deadcommons/projects/3)
+  and comment on it to claim it before you start. Work isn't tracked anywhere else (no TODOs or lists
+  in the repo); new work you find becomes its own issue.
+- **Branch from `playtest`** and open the pull request against `playtest`, saying `Closes #N`.
+- **Build and test:** `cargo clippy` and `cargo test --release --workspace` (the GPU test skips
+  itself without a GPU). Never run `cargo fmt` over the tree. Prerequisites are in CONTRIBUTING.md.
+- **Commits:** signed off by the person you work for (`git commit -s`; an agent never signs off for
+  itself), with an `Assisted-by:` trailer naming the tool, never `Co-authored-by:` (AI.md).
+- **Show it working:** a change a player can see or hear comes with pictures (`--render-to`, see
+  Offscreen under Commands) in the pull request, never committed.
+- **This repo's art is enough.** Nothing here needs the bought art of the official build or any
+  private repo; the sections that mention them describe how official builds are made.
+- **Maintainers** (Dead Commons' own machines, boards and private repos) have their extra steps in
+  [docs/maintainers.md](docs/maintainers.md). Skip it if that isn't you.
 
 ## Layout
 

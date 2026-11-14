@@ -1,9 +1,11 @@
 # Discord server
 
-The Zombye community server, as set up on 2026-10-23. This page records the setup so it can
-be recreated or audited. Change it in the same PR whenever the server changes.
+The Zombye community server, set up on 2026-10-23 and last brought up to date here on 2026-11-14.
+This page records the setup so it can be recreated or audited. Change it in the same PR whenever the
+server changes. The posted messages near the end are the October originals; the live ones have
+since been rewritten (open source, the playtest).
 
-- **Name:** Zombye. Renamed from Shamblewood on 2026-10-23 (server, webhook and #welcome).
+- **Name:** Zombye.
 - **Invite:** <https://discord.gg/y7NsmVG2br> (never expires, no use limit, lands in #welcome)
 - **Access:** invite only. Not Discoverable, no "Apply to Join".
 - **Bots and integrations:** one webhook, **Zombye GitHub**, posting to #devlog (Server
@@ -24,10 +26,15 @@ be recreated or audited. Change it in the same PR whenever the server changes.
 | Community | #ideas | Forum | Tags: gameplay, combat, crafting, world, UI. Tags optional. |
 | Community | #clips-and-screenshots | Text | |
 | Build | #help | Forum | |
+| Build | #contributing | Text | Contributor, Maintainer and staff only. Pinned: how to help, the repo and the board. |
 | Build | #dev | Text | Code and engine. |
 | Build | #modding | Text | Opt-in through onboarding. |
 | Build | #agents | Text | People building with AI agents and MCP. Opt-in through onboarding. |
+| Community | #art-and-music | Forum | Artists and musicians. |
 | Voice | Safehouse | Voice | |
+| Playtest | #how-to-playtest | Text | Playtester only, read-only, pinned guides. |
+| Playtest | #playtest-chat | Text | Playtester only. |
+| Playtest | #playtest-bugs | Forum | Playtester only. Tags: crash, graphics, multiplayer, gameplay, performance, install. |
 | (none) | #moderator-only | Text | Private, staff only. Created by Discord when Community was enabled. Receives Community updates, safety notifications and AutoMod alerts. |
 
 The Info category denies @everyone **Send Messages and Create Posts**, **Send Messages in Threads
@@ -37,7 +44,7 @@ first three, so maintainers can post devlogs. The three Info channels are synced
 #announcements and #devlog are plain read-only text channels, not Announcement channels. Converting
 them makes the server profile visible outside the server, so that waits for a decision.
 
-**Not created yet:** #bugs and #playtest. They come when there's a playable build.
+The Playtest category is private to the Playtester role.
 
 ## Roles
 
@@ -50,7 +57,8 @@ Highest first. Colours are muted, desaturated small-town tones.
 | Contributor | `#7E9076` | None beyond @everyone |
 | Modder | `#5F8A8B` | None beyond @everyone |
 | Agent Builder | `#6E7F99` | None beyond @everyone |
-| Playtester | `#8E7A8F` | None beyond @everyone (opt-in) |
+| Playtester | `#8E7A8F` | None beyond @everyone (opt-in); sees the Playtest category |
+| Artist | | None beyond @everyone |
 | @everyone | | Discord defaults, with the Community "risky permissions" removed (Create Expressions, Create Events, Mention @everyone) |
 
 Only Dead Commons and Maintainer have admin or moderation rights.
@@ -63,7 +71,8 @@ Only Dead Commons and Maintainer have admin or moderation rights.
 - **Explicit media filter:** scan media from all members.
 - **DM and spam protection:** all Discord defaults on (hide suspicious DMs, filter DMs from unknown
   users, warn before outbound links, hide and delete suspected spammers).
-- **Rules screening (Access → Server Rules):** on, with the six rules below.
+- **Rules screening (Access → Server Rules):** on, with seven rules: the six below and "no leaked,
+  ripped or bought art".
 - **Server description:** "An open-source survival sandbox: isometric zombie survival in real 3D,
   built in Rust. Moddable by default, agent-first. Pre-alpha."
 
@@ -91,7 +100,8 @@ Enabled. Server Guide not set up (kept lean).
 |---|---|---|---|
 | Play it | Get the Playtester role and a ping when there's a build to try | Playtester | #clips-and-screenshots, #ideas |
 | Mod it | Get the Modder role and the #modding channel | Modder | #modding |
-| Build it (code) | Get the Contributor role and the #dev channel | Contributor | #dev |
+| I want to help build it | Get the Contributor role, #contributing and #dev | Contributor | #contributing, #dev |
+| I make art or music | Get the Artist role and #art-and-music | Artist | #art-and-music |
 | Build with AI agents | Get the Agent Builder role and the #agents channel (MCP, bots, tools) | Agent Builder | #agents |
 | Just watching | Follow #devlog and #announcements, no role needed | (none) | #devlog, #announcements |
 
@@ -166,9 +176,8 @@ Bug reports and playtests get their own channels once there's a playable build. 
 
 ## Later
 
-- #bugs (forum) and #playtest, when there's a playable build. Add Playtester to the playtest
-  channel and ping it for builds.
-- The GitHub webhook to #devlog was connected on 2026-10-23 (pushes and releases).
+- The GitHub webhook to #devlog (connected 2026-10-23) posts every branch push; narrow it to `main`
+  and releases.
 - Tags for the #help forum, once we see what people ask about.
 - Decide whether #announcements and #devlog become Announcement channels (makes the server
   profile visible outside the server).
