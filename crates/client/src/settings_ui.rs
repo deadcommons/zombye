@@ -110,6 +110,8 @@ pub enum Change {
     HelpText(HelpText),
     /// The picture as a faded print (`film.rs`).
     OldLook(OldLook),
+    /// The frame-rate read-out (`perf_monitor.rs`).
+    PerfMonitor(crate::perf_monitor::PerfMonitor),
     /// Keyboard and mouse, the controller, or whichever was touched last (`pad.rs`).
     Input(crate::pad::InputSetting),
     /// Everything on this tab as the game ships it.
@@ -143,6 +145,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
         Change::HelpText(h) => s.help_text = h,
         Change::OldLook(o) => s.old_look = o,
+        Change::PerfMonitor(m) => s.perf_monitor = m,
         Change::Input(i) => s.input = i,
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
@@ -157,7 +160,10 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                     s.old_look = d.old_look;
                 }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
+                Tab::Game => {
+                    (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports);
+                    s.perf_monitor = d.perf_monitor;
+                }
                 Tab::Controls => {
                     s.keys.clear();
                     s.pad.clear();
@@ -320,6 +326,15 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                     HelpText::Off => "As Short, and the reminders of what keys and clicks do go too.",
                 },
                 control: Control::Choice(HelpText::ALL.into_iter().map(|h| (h.name().to_string(), h == s.help_text, Change::HelpText(h))).collect()),
+            },
+            Row {
+                label: "Performance monitor",
+                about: match s.perf_monitor {
+                    crate::perf_monitor::PerfMonitor::Off => "Shows the frame rate in the top right corner while you play.",
+                    crate::perf_monitor::PerfMonitor::Fps => "The frame rate, in the top right corner.",
+                    crate::perf_monitor::PerfMonitor::Full => "The frame rate, frame times, the slowest 1% of frames, the preset and the 3D resolution.",
+                },
+                control: Control::Choice(crate::perf_monitor::PerfMonitor::ALL.into_iter().map(|m| (m.name().to_string(), m == s.perf_monitor, Change::PerfMonitor(m))).collect()),
             },
             switch("Opening hints", "Outlines of the doors and windows a building hides from the camera.", s, Switch::OpeningHints),
             switch("Zombie silhouettes", "Zombies you can see show through what covers them from the camera.", s, Switch::ZombieSilhouettes),

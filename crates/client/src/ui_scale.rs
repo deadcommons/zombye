@@ -134,6 +134,9 @@ pub struct ClientSettings {
     pub help_text: crate::help_text::HelpText,
     /// The old look (`film.rs`): the picture as a faded print, off, subtle or strong.
     pub old_look: crate::film::OldLook,
+    /// The performance monitor in the top right corner (`perf_monitor.rs`): off, the frame rate,
+    /// or the frame rate with frame times, the preset and the 3D resolution.
+    pub perf_monitor: crate::perf_monitor::PerfMonitor,
     /// Send crash, F12, hitch and desync reports to the developers (`report.rs`, Linear DCM-92).
     pub send_reports: bool,
     /// The yellow line has said once that reports are sent and how to turn it off.
@@ -175,6 +178,7 @@ impl Default for ClientSettings {
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
             old_look: crate::film::OldLook::Off,
+            perf_monitor: crate::perf_monitor::PerfMonitor::Off,
             send_reports: true,
             reports_notice_seen: false,
             keys: Default::default(),
