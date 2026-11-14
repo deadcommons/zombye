@@ -1167,12 +1167,12 @@ mod tests {
         // Full screen, before the screen is known: Auto, nothing to step.
         s.fullscreen = true;
         assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Auto"));
-        // On a 6K screen at 2x: Auto is half, and the list steps through the 3D resolutions.
+        // On a 6K screen at 2x: Auto is half, and the list steps through the 3D resolutions (up: two thirds).
         let six_k = Some(UVec2::new(6016, 3384));
         let Control::Stepper { value, down: Some(down), up: Some(up) } = screen_resolution(&s, six_k).control else { panic!() };
         assert_eq!(value, "Auto (3008 x 1692)");
         change(&mut s, up);
-        assert!(matches!(screen_resolution(&s, six_k).control, Control::Stepper { ref value, .. } if value == "4512 x 2538"));
+        assert!(matches!(screen_resolution(&s, six_k).control, Control::Stepper { ref value, .. } if value == "4011 x 2256"));
         let mut t = s.clone();
         t.fullscreen_scale = None;
         change(&mut t, down);
