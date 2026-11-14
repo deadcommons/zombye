@@ -262,3 +262,35 @@ mod tests {
         assert!(parse_containers("(containers: [], furniture: [], extra: 1)").is_err());
     }
 }
+
+/// For tests: the nearest point in front of `site` (`ContainerSite::in_front`), within `within` of
+/// it, on its floor and in its room, where a body fits.
+#[cfg(test)]
+pub(crate) fn front_spot(w: &crate::World, site: &ContainerSite, within: f32) -> Option<Vec2> {
+    let (lo, hi) = (site.min - IVec2::splat(2), site.min + site.size + IVec2::splat(2));
+    let slack = w.config.containers.front_slack_m;
+    let mut best: Option<(f32, Vec2)> = None;
+    for y in (lo.y * 10)..(hi.y * 10) {
+        for x in (lo.x * 10)..(hi.x * 10) {
+            let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
+            let d = site.distance(p);
+            if d > within || !site.in_front(p, slack) {
+                continue;
+            }
+            let fits = match site.level {
+                0 => w.map.room_at(p) == site.room && w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) <= 1e-3,
+                _ => {
+                    let r = crate::players::PLAYER_RADIUS;
+                    [Vec2::ZERO, Vec2::new(r, 0.0), Vec2::new(-r, 0.0), Vec2::new(0.0, r), Vec2::new(0.0, -r)].iter().all(|o| {
+                        let t = (p + *o).floor().as_ivec2();
+                        w.map.upper_tile(t).is_some_and(|u| u.floor && !u.blocked && u.room == site.room)
+                    })
+                }
+            };
+            if fits && best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}

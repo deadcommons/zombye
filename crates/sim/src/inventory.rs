@@ -2058,24 +2058,7 @@ mod tests {
 
     /// The spot nearest container `site` (within `within` m of it, on a 0.1 m grid) where a body fits,
     /// in its room, from which it can be opened (in reach and in front).
-    fn front_spot(w: &World, site: &ContainerSite, within: f32) -> Option<Vec2> {
-        let (lo, hi) = (site.min - IVec2::splat(2), site.min + site.size + IVec2::splat(2));
-        let slack = w.config.containers.front_slack_m;
-        let mut best: Option<(f32, Vec2)> = None;
-        for y in (lo.y * 10)..(hi.y * 10) {
-            for x in (lo.x * 10)..(hi.x * 10) {
-                let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
-                let d = site.distance(p);
-                if d > within || w.map.room_at(p) != site.room || !site.in_front(p, slack) || w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) > 1e-3 {
-                    continue;
-                }
-                if best.is_none_or(|(b, _)| d < b) {
-                    best = Some((d, p));
-                }
-            }
-        }
-        best.map(|(_, p)| p)
-    }
+    use crate::containers::front_spot;
 
     /// Every container on the ground floor of every shipped template can be opened: somewhere a
     /// body fits in front of it, in reach (#54: containers open only from their front).

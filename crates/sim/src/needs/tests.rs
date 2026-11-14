@@ -244,9 +244,7 @@ fn food_spoils_over_time_and_can_poison() {
         let id = w.add_player(w.player_spawn);
         w.skip_time(skip);
         let site = w.containers().iter().find(|s| w.container_def(s).id == "fridge").expect("a fridge").clone();
-        let spots = (-1..=site.size.y).flat_map(|dy| (-1..=site.size.x).map(move |dx| site.min + IVec2::new(dx, dy)));
-        let t = spots.filter(|&t| w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == site.room).min_by_key(|t| (t.x, t.y)).unwrap();
-        w.players[0].state.pos = t.as_vec2() + Vec2::splat(0.5);
+        w.players[0].state.pos = crate::containers::front_spot(&w, &site, crate::inventory::CONTAINER_REACH - 0.1).expect("room in front of the fridge");
         w.player_search(id, Some(site.id)).unwrap();
         for _ in 0..100 {
             w.step();
