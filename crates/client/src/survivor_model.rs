@@ -49,6 +49,7 @@ use zombye_net::OutfitView;
 use zombye_sim::items::WeaponCategory;
 use zombye_sim::{BodyPart, ItemDef, WearSlot};
 
+use crate::held::Carry;
 use crate::character::{Body, HAIR_REGION, REGIONS, Rig, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
 use crate::rig::{globals, smooth};
 use crate::server_link::{JoinInfo, ServerLink};
@@ -331,6 +332,29 @@ struct Fingers {
     out: f32,
 }
 
+/// Where a carry has the arm (#35), in model space (+Z forward, +Y up; `out` is the arm's side
+/// along X, -1 the right's): the lines of the upper arm and of the forearm. The hand goes on in
+/// line with the forearm, thumb up, palm to the body, so what stands in the fist stands upright
+/// and a gun's top is up. `None` for a thing at one's side: the arm is the clips'.
+/// - In front: the upper arm hangs, the elbow bent just under 90 degrees, the forearm level at the
+///   waist and a little in across the body, the fist in front of the belly.
+/// - Low and ready: the elbow out a little from the side and bent about 65 degrees, the forearm
+///   forward and down 30 degrees and a little out, the fist in front of the hip, clear of the thigh
+///   (and far enough out to show past the body from most of the way round).
+fn carry_lines(carry: Carry, out: f32) -> Option<(Vec3, Vec3)> {
+    match carry {
+        Carry::Side => None,
+        Carry::Front => Some((Vec3::new(out * 0.10, -1.0, 0.05).normalize(), Vec3::new(-out * 0.20, 0.0, 1.0).normalize())),
+        Carry::Low => Some((Vec3::new(out * 0.25, -1.0, -0.10).normalize(), Vec3::new(out * 0.14, -0.577, 1.0).normalize())),
+    }
+}
+
+/// The turn that takes +X to `along` and +Y as near to `toward` as it can be across it.
+fn framed(along: Vec3, toward: Vec3) -> Quat {
+    let toward = (toward - along * toward.dot(along)).normalize();
+    Quat::from_mat3(&Mat3::from_cols(along, toward, along.cross(toward)))
+}
+
 /// One hand and its grips (#35). **The thing follows the hand**: it sits in the hand's grip frame
 /// (the grip at the origin on the palm, +Z along the thing, +Y its top), which is fixed on the
 /// hand's bone per [`Hold`], and the hand closes round it ([`Fingers`]). The hand's shape is read off
@@ -371,6 +395,9 @@ struct Hand {
     /// The bone's turn that puts a gun's barrel on the clips' line, its top up.
     gun: Quat,
     fingers: Option<Fingers>,
+    /// The arm it is on, for a carry: the upper arm's bone and the forearm's (the hand's parent
+    /// and its parent), each with its rest rotation in model space and the line it lies on there.
+    arm: Option<[(usize, Quat, Vec3); 2]>,
 }
 
 impl Hand {
@@ -386,7 +413,14 @@ impl Hand {
             Some((b, rig.inverse_bind[b].inverse().to_scale_rotation_translation().1))
         });
         let fingers = joints[0].is_some().then_some(Fingers { joints, axes, out: side });
-        let mut hand = Self { bone, rest, axes, out: side, palm: offset + axes * Vec3::NEG_Y * PALM, natural: Quat::IDENTITY, gun: Quat::IDENTITY, fingers };
+        let at = |b: usize| rig.inverse_bind[b].inverse().transform_point3(Vec3::ZERO);
+        let arm = rig.bones[bone].parent.and_then(|fore| {
+            let upper = rig.bones[fore].parent?;
+            let is_arm = |b: usize| rig.bones[b].name.to_lowercase().contains("arm");
+            let part = |b: usize, end: usize| (b, rig.inverse_bind[b].inverse().to_scale_rotation_translation().1, (at(end) - at(b)).normalize_or_zero());
+            (is_arm(fore) && is_arm(upper)).then(|| [part(upper, fore), part(fore, bone)])
+        });
+        let mut hand = Self { bone, rest, axes, out: side, palm: offset + axes * Vec3::NEG_Y * PALM, natural: Quat::IDENTITY, gun: Quat::IDENTITY, fingers, arm };
         // The clips' line for what the hand holds, on the bone: model-forward in the reference pose.
         let reference = retarget.ref_global[bone].inverse();
         if side < 0.0 {
@@ -412,6 +446,30 @@ impl Hand {
         }
         let at = self.palm - self.axes * fingers * (BACK * tilt / TILT);
         Transform::from_translation(self.rest.inverse() * at).with_rotation(self.rest.inverse() * turn)
+    }
+
+    /// The model-space rotations of the upper arm, the forearm and the hand in a carry
+    /// ([`carry_lines`]): each bone's rest turned to lie on its line, the elbow's hinge kept (the
+    /// upper arm's thumb side toward the forearm) and the hand's thumb up.
+    fn carried(&self, carry: Carry) -> Option<[Quat; 3]> {
+        let (upper, fore) = carry_lines(carry, self.out)?;
+        let [(_, upper_rest, upper_line), (_, fore_rest, fore_line)] = self.arm?;
+        let thumb = self.axes * Vec3::Z;
+        let to = |line: Vec3, along: Vec3, toward: Vec3| framed(along, toward) * framed(line, thumb).inverse();
+        let hand = to(self.axes * Vec3::X * self.out, fore, Vec3::Y);
+        Some([to(upper_line, upper, fore) * upper_rest, to(fore_line, fore, Vec3::Y) * fore_rest, hand * self.rest])
+    }
+
+    /// The arm of `pose` in that carry, by `w` (0 as the pose has it, 1 the carry): each bone from
+    /// the shoulder down turned toward its place under its parent as that now is.
+    fn carry(&self, rig: &Rig, pose: &mut RigPose, carry: Carry, w: f32) {
+        let (Some(turns), Some(arm)) = (self.carried(carry).filter(|_| w > 0.0), self.arm) else { return };
+        let globals = rig.globals(pose);
+        let mut parent = rig.bones[arm[0].0].parent.map_or(Quat::IDENTITY, |p| globals[p].to_scale_rotation_translation().1);
+        for (b, turn) in [arm[0].0, arm[1].0, self.bone].into_iter().zip(turns) {
+            pose.r[b] = pose.r[b].slerp((parent.inverse() * turn).normalize(), w.min(1.0)).normalize();
+            parent = (parent * pose.r[b]).normalize();
+        }
     }
 
     /// The bone's turn while it holds something that way, `clip_w` as in [`Hand::frame`].
@@ -1043,6 +1101,17 @@ impl SurvivorModel {
         }
     }
 
+    /// The arms (right, left) of `pose` carrying what their hands hold (#35), each by its weight
+    /// (0 the arm as the pose has it, 1 the carry): the upper arm, the forearm and the hand turned
+    /// to the carry's lines in model space, over whatever the gait has the arm doing, so a mug
+    /// stays upright in front of the body standing, walking, running and sneaking. After
+    /// [`SurvivorModel::hold`], whose straightened wrist it takes the place of.
+    pub fn carry(&self, pose: &mut RigPose, carries: [(Carry, f32); 2]) {
+        for (hand, (carry, w)) in self.hands.iter().zip(carries) {
+            hand.carry(&self.body.rig, pose, carry, w);
+        }
+    }
+
     /// The grip frame of hand `hand` (0 right, 1 left) on its bone, holding that way, `clip_w` of
     /// the way from rest to a weapon's clip.
     pub fn grip_frame(&self, hand: usize, hold: Hold, clip_w: f32) -> Transform {
@@ -1615,6 +1684,65 @@ mod tests {
         assert_eq!(left.turn(Hold::Fist, 0.0), Quat::IDENTITY);
     }
 
+    /// A small thing at rest is carried in front of the body and a pistol low and ready (#35; the
+    /// owner: the mug "lies sideways in a hanging fist and sinks behind the hip", the pistol "hangs
+    /// straight down and hides against the leg"). Over every clip, whatever the gait has the arm
+    /// doing, either hand: in front, the elbow is bent 70 to 90 degrees, the forearm forward, the
+    /// fist in front of the body between the hips and the chest and what stands in it upright; low,
+    /// a gun's barrel points forward and down 30 degrees, its top up, the fist out beside the hip.
+    /// A thing at one's side, or no weight, leaves the arm to the clips.
+    #[test]
+    fn a_small_thing_is_carried_in_front_and_a_pistol_low_and_ready() {
+        let (body, _) = shipped_body();
+        let rt = Retarget::new(&body, body.clip("idle").unwrap().frames[0].clone());
+        let rig = &body.rig;
+        let hips = rig.find("Hips").unwrap();
+        for (bone, socket, side) in [("RightHand", "hand_r", -1.0), ("LeftHand", "hand_l", 1.0)] {
+            let hand = Hand::new(&body, &rt, bone, socket, side);
+            let [(upper, ..), (fore, ..)] = hand.arm.expect("the body's hands are on arms");
+            // Standing and on the move: the clips a carry goes over.
+            let gaits = ["idle", "walk", "run", "sneak", "crouch"];
+            let mut seen = 0;
+            for clip in body.clips.iter().filter(|c| gaits.iter().any(|g| c.name.to_lowercase().starts_with(g))) {
+                seen += 1;
+                for k in 0..8 {
+                    let clip_pose = clip.sample(k as f32 / 8.0);
+                    let at = |carry: Carry, w: f32| {
+                        let mut pose = clip_pose.clone();
+                        hand.carry(rig, &mut pose, carry, w);
+                        let g = rig.globals(&pose);
+                        let [shoulder, elbow, wrist, hip] = [upper, fore, hand.bone, hips].map(|b| g[b].transform_point3(Vec3::ZERO));
+                        let frame = |hold: Hold| (g[hand.bone] * hand.frame(hold, 0.0).to_matrix()).to_scale_rotation_translation().1;
+                        (pose, shoulder, elbow, wrist, hip, frame(Hold::Fist), frame(Hold::Gun))
+                    };
+                    let name = format!("{} {k}/8 {socket}", clip.name);
+                    let (_, shoulder, elbow, wrist, hip, fist, _) = at(Carry::Front, 1.0);
+                    let bend = (elbow - shoulder).angle_between(wrist - elbow).to_degrees();
+                    assert!((70.0..=90.0).contains(&bend), "{name}: the elbow is bent {bend:.0} degrees");
+                    let forearm = (wrist - elbow).normalize();
+                    assert!(forearm.z > 0.9, "{name}: the forearm points {forearm}, not forward");
+                    assert!((fist * Vec3::Z).y > 0.97, "{name}: what stands in the fist has its top to {}", fist * Vec3::Z);
+                    assert!(wrist.z > shoulder.z + 0.15 && wrist.x.abs() < shoulder.x.abs(), "{name}: the fist at {wrist} is not in front of the body (shoulder {shoulder})");
+                    assert!(wrist.y > hip.y && wrist.y < shoulder.y - 0.15, "{name}: the fist at {wrist} is not at the waist (hips {hip}, shoulder {shoulder})");
+                    let (_, shoulder, _, wrist, _, _, gun) = at(Carry::Low, 1.0);
+                    let barrel = gun * Vec3::Z;
+                    let down = (-barrel.y).asin().to_degrees();
+                    assert!(barrel.z > 0.8 && (25.0..=35.0).contains(&down), "{name}: a gun's barrel points {barrel}, {down:.0} degrees down");
+                    assert!((gun * Vec3::Y).y > 0.8, "{name}: the gun's top is to {}", gun * Vec3::Y);
+                    assert!(wrist.x.abs() > shoulder.x.abs() && wrist.z > shoulder.z + 0.1, "{name}: the fist at {wrist} is not out beside the hip (shoulder {shoulder})");
+                    for (carry, w) in [(Carry::Side, 1.0), (Carry::Front, 0.0)] {
+                        assert_eq!(at(carry, w).0.r, clip_pose.r, "{name}: {carry:?} by {w} moved the arm");
+                    }
+                    // Eased: halfway there, the upper arm is halfway between the clip's turn and the carry's.
+                    let (half, full) = (at(Carry::Front, 0.5).0.r[upper], at(Carry::Front, 1.0).0.r[upper]);
+                    let (to_half, to_full) = (clip_pose.r[upper].angle_between(half), clip_pose.r[upper].angle_between(full));
+                    assert!((to_half - to_full * 0.5).abs() < 1e-3 && (half.angle_between(full) - to_full * 0.5).abs() < 1e-3, "{name}: halfway the upper arm is {to_half} of {to_full} round");
+                }
+            }
+            assert!(seen >= 3, "the body has an idle and gaits ({seen} clips)");
+        }
+    }
+
     /// Prints where the release body's hands point in its clips (`ZOMBYE_RELEASE_CHARACTERS` and
     /// `ZOMBYE_RELEASE_ANIM` set): each hand's fingers, thumb and palm in model space (+Z forward,
     /// +Y up), the forearm's line, and where the hand and the head are. For fitting what is held to
@@ -1637,10 +1765,10 @@ mod tests {
         let head = rig.find("Head").unwrap();
         let v = |v: Vec3| format!("({:5.2} {:5.2} {:5.2})", v.x, v.y, v.z);
         for clip in &body.clips {
-            for k in 0..4 {
-                let pose = clip.sample(k as f32 / 4.0);
+            for k in 0..10 {
+                let pose = clip.sample(k as f32 / 10.0);
                 let g = rig.globals(&pose);
-                print!("{:14} {:.2} head {}", clip.name, k as f32 / 4.0, v(g[head].transform_point3(Vec3::ZERO)));
+                print!("{:14} {:.1}s {:.1} head {}", clip.name, clip.secs, k as f32 / 10.0, v(g[head].transform_point3(Vec3::ZERO)));
                 for (bone, side) in [("RightHand", -1.0), ("LeftHand", 1.0)] {
                     let b = rig.find(bone).unwrap();
                     let turn = (g[b] * rig.inverse_bind[b]).to_scale_rotation_translation().1;

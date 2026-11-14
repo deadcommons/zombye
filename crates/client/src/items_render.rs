@@ -10,6 +10,7 @@ use zombye_sim::ItemStack;
 
 use crate::fog::FogState;
 use crate::server_link::{JoinInfo, ServerLink};
+use crate::held::Carry;
 use crate::survivor_model::{Hold, PALM, SKIN};
 
 /// How items look on the ground and in the hand: one unit cube, a material and size per item, the
@@ -35,7 +36,8 @@ pub struct WeaponLooks {
 /// in that grip frame (the item's grip from `held.ron` applied), how far out of the palm from the
 /// grip it sits (`out`, metres: a thick thing's middle is further off the palm's skin than a
 /// handle's, a flat one's nearer) and how far the hand closes round it (`closed`: 1 round a thin
-/// handle, less round a mug).
+/// handle, less round a mug); and how it is carried at rest (`carry`, from `held.ron`: a weapon at
+/// the side, anything else in front unless its grip says otherwise).
 #[derive(Clone)]
 pub struct HandLook {
     pub mesh: Handle<Mesh>,
@@ -44,19 +46,20 @@ pub struct HandLook {
     pub place: Transform,
     pub out: f32,
     pub closed: f32,
+    pub carry: Carry,
 }
 
 impl HandLook {
     /// A handle or a gun: on the grip, the hand shut round it.
-    fn gripped(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, hold: Hold, place: Transform) -> Self {
-        Self { mesh, material, hold, place, out: 0.0, closed: 1.0 }
+    fn gripped(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, hold: Hold, place: Transform, carry: Carry) -> Self {
+        Self { mesh, material, hold, place, out: 0.0, closed: 1.0, carry }
     }
 
     /// A small thing in the fist.
-    fn in_fist(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, id: &str, (place, thick, girth): (Transform, f32, f32)) -> Self {
+    fn in_fist(mesh: Handle<Mesh>, material: Handle<StandardMaterial>, id: &str, (place, thick, girth): (Transform, f32, f32), carry: Carry) -> Self {
         let grip = crate::held::grip(id);
         let (thick, girth) = (thick * grip.scale, girth * grip.scale);
-        Self { mesh, material, hold: Hold::Fist, place: gripped(id, place), out: (SKIN + thick * 0.5 - PALM).max(-0.02), closed: closed_round(girth) }
+        Self { mesh, material, hold: Hold::Fist, place: gripped(id, place), out: (SKIN + thick * 0.5 - PALM).max(-0.02), closed: closed_round(girth), carry }
     }
 
     /// Where it is drawn in hand `hand`'s grip frame (0 right, 1 left): `out` of the palm, which
@@ -183,8 +186,9 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
             // A gun by its grip, the barrel along the fingers; any other weapon, or a thing made
             // to be held, by its handle.
             let hold = if weapon.is_some_and(|w| join.weapons[w].ranged.is_some()) { Hold::Gun } else { Hold::Handle };
+            let carry = crate::held::carry(&d.id, weapon.is_some());
             if let Some(m) = in_hand.mesh(&d.id) {
-                return Some(HandLook::gripped(meshes.add(m), model_material.clone(), hold, gripped(&d.id, Transform::IDENTITY)));
+                return Some(HandLook::gripped(meshes.add(m), model_material.clone(), hold, gripped(&d.id, Transform::IDENTITY), carry));
             }
             if let Some(w) = weapon {
                 let len = lengths[w];
@@ -194,16 +198,16 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
                 let len = len.max(MIN_LENGTH);
                 // The handle sticks out a little behind the fist.
                 let bar = Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len));
-                return Some(HandLook::gripped(cube.clone(), weapon_mats[w].clone(), hold, gripped(&d.id, bar)));
+                return Some(HandLook::gripped(cube.clone(), weapon_mats[w].clone(), hold, gripped(&d.id, bar), carry));
             }
             if let Some(m) = released.mesh(&d.id) {
                 let fist = bounds(&m).map_or((Transform::IDENTITY, 0.0, 0.0), |(lo, hi)| into_fist(lo, hi));
-                return Some(HandLook::in_fist(meshes.add(m), model_material.clone(), &d.id, fist));
+                return Some(HandLook::in_fist(meshes.add(m), model_material.clone(), &d.id, fist, carry));
             }
             // A box of its size, in the fist.
             let s: Vec3 = item_sizes_for_hand[i];
             let (place, thick, girth) = into_fist(-s * 0.5, s * 0.5);
-            Some(HandLook::in_fist(cube.clone(), item_materials_for_hand[i].clone(), &d.id, (place.with_scale(place.scale * s), thick, girth)))
+            Some(HandLook::in_fist(cube.clone(), item_materials_for_hand[i].clone(), &d.id, (place.with_scale(place.scale * s), thick, girth), carry))
         })
         .collect();
     commands.insert_resource(WeaponLooks { cube, item_materials, item_sizes, item_models, item_logs, log, model_material, hand_looks });

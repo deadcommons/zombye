@@ -16,6 +16,14 @@
 // turns it (`turn`, degrees about X, then Y, then Z) and scales it (`scale`), so an item that sits
 // wrong is put right without code. Every field is optional.
 //
+// `carry` is how the thing is carried while nothing else has the arm (standing, walking, running,
+// sneaking; `held::Carry`, `SurvivorModel::carry`):
+//   - Side: the arm hangs and swings as the body's clips have it (the default for a weapon);
+//   - Front: the elbow bent, the forearm forward at the waist, the thing upright in the fist in
+//     front of the body (the default for everything else: a mug, a tin, a bottle);
+//   - Low: low and ready at the side, the forearm forward and down 30 degrees, clear of the thigh.
+// A guard, a blow, eating, drinking, a reload, a gesture and so on take the arm from the carry.
+//
 // A release build's models have grips of their own (release-models/held/grips.ron), read over
 // these, since a grip belongs to the model it fits.
 //
@@ -25,10 +33,17 @@
 // drink in use, in the left hand's frame (+X out of the back of that hand), while the clip has the
 // fist at the face: they bring the thing to the lips.
 {
-    // The eating clip lays the fist on the mouth: the food a little out of the back of the hand,
-    // in front of the face, not in it.
-    "eating": (offset: (0.055, 0.0, -0.015)),
-    // The drinking clip tips the fist at the mouth, thumb to the face: the bottle's top at the lips,
-    // not inside the head.
-    "drinking": (offset: (0.0, 0.0, -0.05)),
+    // A pistol at rest is held low and ready, its barrel forward and down, not down the leg.
+    "pistol": (carry: Low),
+    // A flashlight too, and turned 60 degrees in the fist, toward the fingers, to shine ahead.
+    "flashlight": (carry: Low, turn: (60.0, 0.0, 0.0)),
+    // Too big to hold up in one fist.
+    "log": (carry: Side),
+    "petrol_can": (carry: Side),
+    // The eating clip holds the fist in front of the mouth, thumb up, palm to the face: the food in
+    // the fingers (not out past the knuckles), a little out of the palm and down, tipped to the mouth.
+    "eating": (offset: (0.02, 0.0, -0.05), turn: (0.0, -20.0, 0.0)),
+    // The drinking clip holds the fist in front of the brow, thumb to the face: the bottle tipped up
+    // through the fist, its neck down at the lips, its base up and out in front.
+    "drinking": (offset: (-0.01, 0.0, 0.01), turn: (-27.0, -20.0, 0.0)),
 }

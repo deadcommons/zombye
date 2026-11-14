@@ -12,20 +12,45 @@ use std::sync::OnceLock;
 use bevy::prelude::*;
 use serde::Deserialize;
 
+/// How a hand carries a thing while nothing else has the arm (#35): standing, walking, running
+/// and sneaking; a guard, a blow, eating, drinking, a reload and the like take the arm from it
+/// (`survivor_model::SurvivorModel::carry`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+pub enum Carry {
+    /// The arm hangs and swings as the body's clips have it: a knife, a bat, a rifle at one's side.
+    #[default]
+    Side,
+    /// The elbow bent, the forearm forward at the waist, the fist in front of the body with the
+    /// thing upright in it: a mug, a tin, a bottle, a candle.
+    Front,
+    /// Low and ready at the side: the elbow bent less, the forearm forward and down 30 degrees, clear
+    /// of the thigh. A pistol's barrel points that way; a flashlight is turned in the fist to shine
+    /// ahead.
+    Low,
+}
+
 /// One item's grip: metres to move it in the hand's frame (+Z along the item, +Y its top, +X out
 /// of the right palm and out of the back of the left hand), degrees to turn it about the hand's X, Y and Z (in that order), and how
-/// much to scale it.
+/// much to scale it. And how it is carried at rest (`carry`): left out, a weapon at the side and
+/// anything else in front ([`carry`]).
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Grip {
     pub offset: (f32, f32, f32),
     pub turn: (f32, f32, f32),
     pub scale: f32,
+    #[serde(deserialize_with = "some_carry")]
+    pub carry: Option<Carry>,
+}
+
+/// `carry: Front` in the file, not `carry: Some(Front)`.
+fn some_carry<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Carry>, D::Error> {
+    Carry::deserialize(d).map(Some)
 }
 
 impl Default for Grip {
     fn default() -> Self {
-        Self { offset: (0.0, 0.0, 0.0), turn: (0.0, 0.0, 0.0), scale: 1.0 }
+        Self { offset: (0.0, 0.0, 0.0), turn: (0.0, 0.0, 0.0), scale: 1.0, carry: None }
     }
 }
 
@@ -93,6 +118,16 @@ pub fn grip(id: &str) -> Grip {
     GRIPS.get_or_init(shipped).get(id).copied().unwrap_or_default()
 }
 
+/// How item `id` is carried at rest: what its grip says, else by what it is: a weapon at the side,
+/// anything else in front of the body.
+pub fn carry(id: &str, weapon: bool) -> Carry {
+    carry_of(grip(id), weapon)
+}
+
+fn carry_of(grip: Grip, weapon: bool) -> Carry {
+    grip.carry.unwrap_or(if weapon { Carry::Side } else { Carry::Front })
+}
+
 /// The grips (not items) put on top of the thing in use at the mouth, in the left hand's frame:
 /// food being eaten and a drink being drunk. The clips raise the fist to the face; these move what
 /// is in it to the lips (#35).
@@ -116,9 +151,29 @@ mod tests {
         assert!(parse(r#"{"bat": (spin: 1.0)}"#).is_err());
     }
 
+    /// How a thing is carried at rest is data (#35): a weapon at the side and anything else in
+    /// front unless its grip says otherwise, and the shipped file has the pistol and the flashlight
+    /// low and ready and a log at the side.
+    #[test]
+    fn carries_are_data_with_a_default_by_what_the_thing_is() {
+        assert_eq!(carry_of(Grip::default(), true), Carry::Side);
+        assert_eq!(carry_of(Grip::default(), false), Carry::Front);
+        let grips = parse(r#"{"mug": (carry: Side), "bat": (carry: Front, scale: 2.0)}"#).unwrap();
+        assert_eq!(carry_of(grips["mug"], false), Carry::Side);
+        assert_eq!(carry_of(grips["bat"], true), Carry::Front);
+        assert!(parse(r#"{"mug": (carry: Sideways)}"#).is_err());
+        let shipped = shipped();
+        let of = |id: &str, weapon| carry_of(shipped.get(id).copied().unwrap_or_default(), weapon);
+        assert_eq!(of("pistol", true), Carry::Low);
+        assert_eq!(of("flashlight", false), Carry::Low);
+        assert_eq!(of("log", false), Carry::Side);
+        assert_eq!(of("mug", false), Carry::Front);
+        assert_eq!(of("kitchen_knife", true), Carry::Side);
+    }
+
     #[test]
     fn a_grip_moves_then_turns_the_item() {
-        let g = Grip { offset: (0.0, 0.0, 0.1), turn: (0.0, 90.0, 0.0), scale: 2.0 };
+        let g = Grip { offset: (0.0, 0.0, 0.1), turn: (0.0, 90.0, 0.0), scale: 2.0, carry: None };
         let p = g.transform().transform_point(Vec3::Z);
         assert!((p - Vec3::new(2.0, 0.0, 0.1)).length() < 1e-5, "{p}");
     }

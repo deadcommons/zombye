@@ -30,6 +30,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use zombye_sim::{ActionKind, CombatEventKind, Gesture, ItemCategory, JobKind, Stance, TICK_DT, WeaponCategory};
 
+use crate::held::Carry;
 use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
 use crate::rig::{Bone, Pose, box_faces, mix, rx, ry, rz, skin_matrices, smooth};
@@ -395,6 +396,26 @@ pub struct SurvivorAnim {
     /// How much a weapon's clip has the right arm (a guard while aiming, a blow, a reload): 0 at
     /// rest, where the arm hangs and a handle points forward and down from the fist.
     pub(crate) clip_w: f32,
+    /// How each hand (right, left) carries what it holds at rest and how much the carry has the
+    /// arm (#35; `held::Carry`, `SurvivorModel::carry`): eased to 1 over [`CARRY_SECS`] while the
+    /// hand holds a thing carried in front or low, and back to 0 when it lets go (the way it was
+    /// carried kept until then). What else has the arm takes it from the carry: [`arm_taken`].
+    pub(crate) carry: [(Carry, f32); 2],
+}
+
+/// How long an arm takes to bring a thing up into its carry, or to let it down (seconds).
+const CARRY_SECS: f32 = 0.3;
+
+/// How much something other than the gait has arm `hand` (0 right, 1 left) now, 0 to 1: a guard
+/// while aiming, a blow, a shove or a stomp, hands busy (eating and drinking are the left hand's:
+/// the right goes on carrying), a gesture (the left arm's, or both for hands up), tied hands or
+/// hands at work on another survivor, sitting, climbing, lying down. A carry gives way to it.
+pub(crate) fn arm_taken(a: &SurvivorAnim, now: f32, hand: usize) -> f32 {
+    let action = action_clock(a, now).map_or(0.0, |(.., w)| w);
+    let task = if hand == 0 && matches!(a.task, Some(Task::Eat | Task::Drink)) { 0.0 } else { a.task_w };
+    let gesture = if a.gesture.is_some_and(|g| hand == 1 || g == Gesture::HandsUp) { a.gesture_w } else { 0.0 };
+    let lying = lying(a, now).map_or(0.0, |(_, w)| w);
+    [a.aim_w, action, task, gesture, a.tied_w, a.reach_w, a.sit_w, a.cross_w, lying].into_iter().fold(0.0, f32::max).clamp(0.0, 1.0)
 }
 
 /// How long a hand takes to close round a thing or open again (seconds).
@@ -503,6 +524,7 @@ impl SurvivorAnim {
             sit_w: 0.0,
             hands: None,
             clip_w: 0.0,
+            carry: [(Carry::Side, 0.0); 2],
         }
     }
 }
@@ -756,6 +778,17 @@ fn animate_survivors(
             Some(now) if options.pose.is_none() => [0, 1].map(|k| (now[k].0 + (want[k].0 - now[k].0).clamp(-step, step), now[k].1 + (want[k].1 - now[k].1).clamp(-step, step))),
             _ => want,
         };
+        // A small thing at rest is carried in front of the body, a pistol low and ready (#35): the
+        // arm comes up to it and goes down again at a steady rate.
+        for k in 0..2 {
+            let kind = held[k].map_or(Carry::Side, |h| h.carry);
+            let want = (kind != Carry::Side) as u8 as f32;
+            if want > 0.0 {
+                a.carry[k].0 = kind;
+            }
+            let step = dt / CARRY_SECS;
+            a.carry[k].1 = if a.hands.is_none() || options.pose.is_some() { want } else { a.carry[k].1 + (want - a.carry[k].1).clamp(-step, step) };
+        }
         a.hands = Some(hands);
         match &a.look {
             Look::Grey(js) => {
@@ -777,6 +810,7 @@ fn animate_survivors(
                 // The hands set straight for what is drawn in them and closed round it (#35).
                 let grasp = |k: usize| Grasp { hold: held[k].map_or(Hold::Fist, |h| h.hold), clip_w: if k == 0 { a.clip_w } else { 0.0 }, held: hands[k].0, closed: hands[k].1 };
                 model.hold(&mut pose, [grasp(0), grasp(1)]);
+                model.carry(&mut pose, [0, 1].map(|k| (a.carry[k].0, a.carry[k].1 * smooth(0.0, 1.0, 1.0 - arm_taken(a, now, k)))));
                 for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
@@ -1520,6 +1554,37 @@ mod tests {
     }
 
     /// Grounded poses put a boot on the floor, and nothing sinks below it.
+    /// A carry gives the arm up to whatever else wants it (#35): nothing at rest or on the move;
+    /// a guard, a blow and a reload take both arms; eating and drinking the left, so the right
+    /// goes on carrying; a wave the left, hands up both.
+    #[test]
+    fn a_carry_gives_way_to_what_else_has_the_arm() {
+        let anim = || SurvivorAnim::new(1, Look::Grey([Entity::PLACEHOLDER; N]), [1.0; 3]);
+        let taken = |a: &SurvivorAnim| [0, 1].map(|hand| arm_taken(a, 10.0, hand));
+        let mut a = anim();
+        (a.move_w, a.run_w) = (1.0, 1.0);
+        assert_eq!(taken(&a), [0.0, 0.0]);
+        let mut a = anim();
+        a.aim_w = 0.7;
+        assert_eq!(taken(&a), [0.7, 0.7]);
+        let mut a = anim();
+        a.action = Some(ActionClock { kind: ActionKind::Swing, n: 0, start: 9.0, land: 10.0, end: None });
+        assert_eq!(taken(&a), [1.0, 1.0]);
+        for (task, want) in [(Task::Eat, [0.0, 1.0]), (Task::Drink, [0.0, 1.0]), (Task::Reload, [1.0, 1.0]), (Task::Loot, [1.0, 1.0])] {
+            let mut a = anim();
+            (a.task, a.task_w) = (Some(task), 1.0);
+            assert_eq!(taken(&a), want, "{task:?}");
+        }
+        for (gesture, want) in [(Gesture::Wave, [0.0, 1.0]), (Gesture::HandsUp, [1.0, 1.0])] {
+            let mut a = anim();
+            (a.gesture, a.gesture_w) = (Some(gesture), 1.0);
+            assert_eq!(taken(&a), want, "{gesture:?}");
+        }
+        let mut a = anim();
+        a.sit_w = 0.4;
+        assert_eq!(taken(&a), [0.4, 0.4]);
+    }
+
     #[test]
     fn locomotion_keeps_a_foot_on_the_ground() {
         for i in 0..16 {
