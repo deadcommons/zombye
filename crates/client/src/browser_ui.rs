@@ -47,6 +47,14 @@ use crate::ui_scale::SettingsStore;
 const WIDTH: f32 = 932.0 + 2.0 * theme::SHEET_PAD.0;
 /// Lines of the list on show at once (servers and the two section headings).
 const VISIBLE: usize = 10;
+/// Over the main menu the list is shorter, so the screen ends above the menu's footer in a
+/// window of 1280 x 720.
+const VISIBLE_MENU: usize = 8;
+
+/// How many lines of the list are on show: fewer over the main menu.
+fn visible(menu: bool) -> usize {
+    if menu { VISIBLE_MENU } else { VISIBLE }
+}
 const LINE_H: f32 = 24.0;
 // In the game the skin is `theme.rs`'s: a sheet, light worn buttons, flat rows. Over the main
 // menu it is the menu's (`Skin`).
@@ -282,17 +290,17 @@ fn lines(b: &Browser) -> Vec<Line> {
     out
 }
 
-/// The first line to show so that line `at` of `n` is among the `VISIBLE` on show, moving as
+/// The first line to show so that line `at` of `n` is among the `show` on show, moving as
 /// little as possible from `top`.
-fn scrolled(top: usize, at: Option<usize>, n: usize) -> usize {
-    let most = n.saturating_sub(VISIBLE);
+fn scrolled(top: usize, at: Option<usize>, n: usize, show: usize) -> usize {
+    let most = n.saturating_sub(show);
     let mut top = top.min(most);
     if let Some(at) = at {
         // A server just under a heading shows its heading too.
         if at.saturating_sub(1) < top {
             top = at.saturating_sub(1);
-        } else if at >= top + VISIBLE {
-            top = at + 1 - VISIBLE;
+        } else if at >= top + show {
+            top = at + 1 - show;
         }
     }
     top.min(most)
@@ -464,7 +472,7 @@ pub(crate) fn keys(
     for w in wheel.read() {
         let lines = if w.unit == MouseScrollUnit::Line { w.y } else { w.y / LINE_H };
         let n = ui.browser.as_ref().map_or(0, |b| lines_len(b));
-        let top = (ui.top as f32 - lines.round()).clamp(0.0, n.saturating_sub(VISIBLE) as f32) as usize;
+        let top = (ui.top as f32 - lines.round()).clamp(0.0, n.saturating_sub(visible(ui.menu)) as f32) as usize;
         if top != ui.top {
             ui.top = top;
             ui.dirty = true;
@@ -708,7 +716,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
         // In the menu it stands where the menu's own screens do, on the menu's ground; in the
         // game it is a sheet at the top of the window.
         if k.menu {
-            (node.left, node.top, node.margin, node.width, node.padding) = (percent(9), px(18), UiRect::ZERO, px(WIDTH - 2.0 * theme::SHEET_PAD.0), UiRect::ZERO);
+            (node.left, node.top, node.margin, node.width, node.padding) = (percent(9), px(10), UiRect::ZERO, px(WIDTH - 2.0 * theme::SHEET_PAD.0), UiRect::ZERO);
             commands.entity(root).remove::<ImageNode>();
         } else {
             (node.left, node.top, node.margin, node.width, node.padding) = (percent(50), px(14), UiRect::left(px(-WIDTH / 2.0)), px(WIDTH), UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)));
@@ -722,7 +730,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     let first = all.iter().find_map(|l| if let Line::Server(a) = l { Some(a.clone()) } else { None });
     let selected = ui.selected.clone().filter(|s| b.row(s).is_some()).or(first);
     let at = selected.as_ref().and_then(|s| all.iter().position(|l| *l == Line::Server(s.clone())));
-    let top = scrolled(ui.top, at, all.len());
+    let show = visible(k.menu);
+    let top = scrolled(ui.top, at, all.len(), show);
     // A file is named by its name alone: its whole path says nothing to a player.
     let named = |s: &str| if s.starts_with("http://") || s.starts_with("https://") { s.to_string() } else { std::path::Path::new(s).file_name().map_or(s.to_string(), |n| n.to_string_lossy().into_owned()) };
     let source = match (&b.list, b.source()) {
@@ -734,8 +743,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { k.dim };
     let summary = b.summary();
     let picked = selected.as_ref().and_then(|s| b.row(s)).map(|r| details(r, &mods.0, agent));
-    let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(VISIBLE).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
-    let more = (top, all.len().saturating_sub(top + VISIBLE));
+    let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(show).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
+    let more = (top, all.len().saturating_sub(top + show));
     let (focus, name, password, address, note, warn) = (ui.field, ui.name.clone(), "*".repeat(ui.password.chars().count()), ui.address.clone(), ui.note.clone(), ui.warn);
     ui.top = top;
     ui.selected = selected.clone();
@@ -775,7 +784,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
             cell(h, if more.0 > 0 { format!("Note   ({} more above)", more.0) } else { "Note".to_string() }, None, k.dim, SMALL);
         });
         // The list: always the same height, so the rest doesn't jump as answers come.
-        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(VISIBLE as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
+        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(show as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
             for (line, cells) in rows {
                 match (line, cells) {
                     (Line::Note(text), _) => {
@@ -866,7 +875,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
             Some(Field::Address) => "Type host or host:port, Enter adds it to your servers  |  Tab next field  |  Esc done",
             Some(Field::Password) => "Enter joins with this password  |  Tab next field  |  Esc done",
             Some(Field::Name) => "The name you play under (none: the server makes one up)  |  Tab next field  |  Enter or Esc done",
-            None => if k.menu { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  Esc back" } else { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  F7 or Esc close" },
+            None => if k.menu { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added" } else { "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  F7 or Esc close" },
         };
         c.spawn((Text::new(hint), font(SMALL), TextColor(k.dim), Pickable::IGNORE));
         if !note.is_empty() {
@@ -968,13 +977,14 @@ mod tests {
 
     #[test]
     fn the_list_scrolls_to_keep_the_picked_server_on_show() {
-        assert_eq!(scrolled(0, None, 5), 0);
-        assert_eq!(scrolled(3, None, 5), 0, "a short list doesn't scroll");
-        assert_eq!(scrolled(0, Some(VISIBLE), 30), 1);
-        assert_eq!(scrolled(0, Some(29), 30), 30 - VISIBLE);
-        assert_eq!(scrolled(20, Some(5), 30), 4, "the line above comes along (a heading)");
-        assert_eq!(scrolled(4, Some(6), 30), 4, "already on show: stays put");
-        assert_eq!(scrolled(99, None, 30), 30 - VISIBLE);
+        assert_eq!(scrolled(0, None, 5, VISIBLE), 0);
+        assert_eq!(scrolled(3, None, 5, VISIBLE), 0, "a short list doesn't scroll");
+        assert_eq!(scrolled(0, Some(VISIBLE), 30, VISIBLE), 1);
+        assert_eq!(scrolled(0, Some(29), 30, VISIBLE), 30 - VISIBLE);
+        assert_eq!(scrolled(20, Some(5), 30, VISIBLE), 4, "the line above comes along (a heading)");
+        assert_eq!(scrolled(4, Some(6), 30, VISIBLE), 4, "already on show: stays put");
+        assert_eq!(scrolled(99, None, 30, VISIBLE), 30 - VISIBLE);
+        assert_eq!(scrolled(0, Some(29), 30, visible(true)), 30 - VISIBLE_MENU, "the menu's shorter list");
     }
 
     #[test]
