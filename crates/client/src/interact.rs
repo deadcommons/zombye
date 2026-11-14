@@ -112,7 +112,7 @@ fn look(
     let sites = sites.get_or_insert_with(|| zombye_sim::containers::find_sites(&map.0, &join.containers));
     let switches = switches.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
     let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
-    let thing = world_actions::faced(&map.0, sites, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
+    let thing = world_actions::faced(&map.0, sites, join.containers.front_slack_m, switches, &link.curr.fires, bodies, join.fire.reach, pos, me.curr.level, dir);
     let menu = |t: Target, at: Vec2| {
         let (title, lines) = world_actions::entries(t, &map.0, sites, &join.containers, &join.items, &join.builds, &join.blind_tag, join.fire.reach, me.id, pos, link.own(me.id));
         (!lines.is_empty()).then_some(Faced::Thing { title, lines, at })

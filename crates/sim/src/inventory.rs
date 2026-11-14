@@ -22,7 +22,8 @@
 //! click, a request crossing a snapshot) queues nothing more and refuses nothing.
 //!
 //! **Containers** ([`crate::containers`]) are opened by searching them (`Search`) from within
-//! [`CONTAINER_REACH`] of the furniture's nearest edge, in its room (E picks the one faced, nearest
+//! [`CONTAINER_REACH`] of the furniture's nearest edge, in its room, standing in front of it (its
+//! `facing`; `ContainerSite::in_front`) unless its kind opens from any side (E picks the one faced, nearest
 //! first, else the nearest): filled on first open, stored sparsely in the world from then on
 //! (`World::opened`), and open to the searcher until it is [`CONTAINER_KEEP_OPEN`] away or leaves
 //! the room. E with no container and nothing on the floor gets one plain answer ([`NOTHING_HERE`]).
@@ -676,9 +677,10 @@ impl World {
     }
 
     /// Can player `p` open container `site`? Same room, within [`CONTAINER_REACH`] of the nearest
-    /// edge of the furniture.
+    /// edge of the furniture, and in front of it (not beside or behind it:
+    /// [`ContainerSite::in_front`], `containers.ron`'s `front_slack_m`).
     fn reaches(&self, p: &Player, site: &ContainerSite) -> bool {
-        self.within(p, site, CONTAINER_REACH)
+        self.within(p, site, CONTAINER_REACH) && site.in_front(p.state.pos, self.config.containers.front_slack_m)
     }
 
     /// Is container `site` still usable by player `p`, which has it open? Same room, within
@@ -2007,33 +2009,20 @@ mod tests {
             let find = |k: &str| here.iter().find(|s| kind(&w, s) == k).cloned();
             let (Some(counter), Some(fridge), Some(oven)) = (find("kitchen_cupboard"), find("fridge"), find("oven")) else { continue };
             kitchens += 1;
-            // Somewhere a body fits at the counter (within 0.6 m of it), as near as it gets to all three.
-            let (lo, hi) = (counter.min - IVec2::splat(2), counter.min + counter.size + IVec2::splat(2));
-            let mut best: Option<(f32, Vec2)> = None;
-            for y in (lo.y * 10)..(hi.y * 10) {
-                for x in (lo.x * 10)..(hi.x * 10) {
-                    let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
-                    if w.map.room_at(p) != room || w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) > 1e-3 || counter.distance(p) > 0.6 {
-                        continue;
-                    }
-                    let worst = [&counter, &fridge, &oven].iter().map(|s| s.distance(p)).fold(0.0, f32::max);
-                    if best.is_none_or(|(d, _)| worst < d) {
-                        best = Some((worst, p));
-                    }
-                }
-            }
-            let (worst, at) = best.expect("room to stand at the counter");
-            assert!(worst <= CONTAINER_REACH - 0.05, "room {room}: the furthest of counter, fridge and oven is {worst} m from the best spot at the counter");
+            // Where a body fits in front of each (within 0.6 m of it): containers open only from the front.
+            let spots: Vec<Vec2> = [&counter, &fridge, &oven].iter().map(|site| front_spot(&w, site, 0.6).unwrap_or_else(|| panic!("room {room}: nowhere to stand in front of the {}", kind(&w, site)))).collect();
             let pi = w.players.iter().position(|p| p.id == id).unwrap();
-            w.players[pi].state.pos = at;
+            // Facing the counter from in front of it, E opens the counter.
+            let spot = spots[0];
+            w.players[pi].state.pos = spot;
             w.players[pi].jobs.clear();
-            // Facing the counter, E opens the counter.
             let lo = counter.min.as_vec2();
-            let to = at.clamp(lo, lo + counter.size.as_vec2()) - at;
+            let to = spot.clamp(lo, lo + counter.size.as_vec2()) - spot;
             w.players[pi].state.facing = to.y.atan2(to.x);
             assert_eq!(w.container_in_reach(id), Some(counter.id));
-            for site in [&counter, &fridge, &oven] {
+            for (site, &at) in [&counter, &fridge, &oven].into_iter().zip(&spots) {
                 let what = format!("room {room}, the {}", kind(&w, site));
+                w.players[pi].state.pos = at;
                 w.player_search(id, if site.id == counter.id { None } else { Some(site.id) }).unwrap();
                 // A second press while it's under way changes nothing.
                 w.player_search(id, Some(site.id)).unwrap();
@@ -2067,6 +2056,65 @@ mod tests {
         assert!(kitchens >= 2, "both houses have kitchens: {kitchens}");
     }
 
+    /// The spot nearest container `site` (within `within` m of it, on a 0.1 m grid) where a body fits,
+    /// in its room, from which it can be opened (in reach and in front).
+    use crate::containers::front_spot;
+
+    /// Every container on the ground floor of every shipped template can be opened: somewhere a
+    /// body fits in front of it, in reach (#54: containers open only from their front).
+    #[test]
+    fn every_container_opens_from_its_front() {
+        let mut c = content(5);
+        c.templates = crate::template::tests::shipped_templates();
+        let w = World::new(c.with_map_chunks(30));
+        let mut checked = 0;
+        for site in w.containers().iter().filter(|s| s.level == 0 && s.front.is_some()) {
+            let kind = &w.container_def(site).id;
+            assert!(front_spot(&w, site, CONTAINER_REACH - 0.1).is_some(), "the {kind} at {} (facing {:?}) has nowhere to stand in front of it", site.min, site.front);
+            checked += 1;
+        }
+        assert!(checked > 50, "only {checked} containers in the town");
+    }
+
+    /// Standing beside a counter or behind it (in a doorway next to it, #54) doesn't open it; in
+    /// front of it, a little past its end, does.
+    #[test]
+    fn containers_open_only_from_the_front() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("counter", "kitchen").unwrap();
+        // A 2 x 1 counter at x 61..63, y 60..61, its doors facing south.
+        w.sites.push(ContainerSite { id: 4, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::new(2, 1), body: None, front: Some(crate::map::Side::S) });
+        let at = |w: &mut World, x: f32, y: f32, facing: f32| {
+            w.players[0].state.pos = Vec2::new(x, y);
+            w.players[0].state.facing = facing;
+            w.players[0].jobs.clear();
+        };
+        // Beside its west end, facing it: not from the side.
+        at(&mut w, 60.6, 60.5, 0.0);
+        assert_eq!(w.container_in_reach(id), None);
+        assert!(w.player_search(id, Some(4)).is_err());
+        // Behind it (north), facing it.
+        at(&mut w, 62.0, 59.6, std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), None);
+        // In front, facing north.
+        at(&mut w, 62.0, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), Some(4));
+        // In front and a little past its east end (within front_slack_m): still.
+        at(&mut w, 63.2, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), Some(4));
+        // Well past its end: no.
+        at(&mut w, 63.6, 61.4, -std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.container_in_reach(id), None);
+        // Opened from the front, it stays open stepping round to its side.
+        at(&mut w, 62.0, 61.4, -std::f32::consts::FRAC_PI_2);
+        w.player_search(id, None).unwrap();
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).open, Some(4));
+        w.players[0].state.pos = Vec2::new(60.6, 60.5);
+        w.step();
+        assert_eq!(me(&w, id).open, Some(4));
+    }
+
     /// Reach is to the nearest edge of the furniture (1.6 m), and an open container stays open
     /// until 2.2 m or another room.
     #[test]
@@ -2074,7 +2122,7 @@ mod tests {
         let (mut w, id) = field();
         let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
         // A 2 x 1 fridge east of the player, its west edge at x = 62.
-        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
+        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None, front: None });
         let at = |w: &mut World, x: f32| {
             w.players[0].state.pos = Vec2::new(x, 60.5);
             w.players[0].jobs.clear();
@@ -2115,9 +2163,9 @@ mod tests {
         let def = w.config.containers.lookup("counter", "kitchen").unwrap();
         // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
         // (0.5 m), one further east behind it (1.5 m, in reach).
-        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
+        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None, front: None });
+        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None, front: None });
+        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None, front: None });
         w.players[0].state.facing = 0.0; // east
         assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
         w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)
